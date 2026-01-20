@@ -1,18 +1,20 @@
 import numpy
+import time
 
 from astropy.timeseries import TimeSeries
+from astropy import units
+from astropy.utils.data import clear_download_cache
 from matplotlib import pyplot
 from pathlib import Path
 
+import warnings
+
+warnings.filterwarnings("ignore", module="lightkurve.prf")
+from lightkurve.io.tess import read_tess_lightcurve
+import os
+import sys
+
 LC_DATA_PATH = Path("/Users/adam/Code/lc-simulator/data")
-
-
-def all_invisible():
-    return (LC_DATA_PATH / "invisible").glob("*.fits.gz")
-
-
-def all_visible():
-    return (LC_DATA_PATH / "visible").glob("*.fits.gz")
 
 
 def features(ts):
@@ -24,7 +26,40 @@ def features(ts):
     }
 
 
+def load_tess(data_uri):
+    max_attempts = 5
+    try:
+        for attempt in range(max_attempts):
+            try:
+                with open(os.devnull, "w") as devnull:
+                    old_stdout = sys.stdout
+                    sys.stdout = devnull
+                    try:
+                        ts = read_tess_lightcurve(data_uri)
+                    finally:
+                        sys.stdout = old_stdout
+            except TimeoutError as e:
+                if attempt == max_attempts - 1:
+                    raise e
+                time.sleep(60 * attempt)
+                continue
+            break
+    except (FileNotFoundError, ValueError, TypeError):
+        return None
+    # Trim the first few hours from the start as loads of SPOC light
+    # curves seem to start with spurious peaks
+    ts = ts[ts["time"] > ts["time"][0] + 3 * units.hour]
+    ts["flux"] = ts["flux"].value
+
+    # There isn't an easy way to avoid filling the filesystem with
+    # astropy's cache so just delete each file as we process it
+    clear_download_cache(data_uri)
+    return ts
+
+
 def load(lc_path):
+    if "mast:HLSP/tess-spoc/" in lc_path:
+        return load_tess(lc_path)
     return TimeSeries.read(lc_path, astropy_native=True)
 
 
@@ -33,21 +68,8 @@ def load_all(lc_paths):
         yield load(lc_path)
 
 
-def load_visible():
-    for lc in load_all(all_visible()):
-        yield lc
-
-
-def load_invisible():
-    for lc in load_all(all_invisible()):
-        yield lc
-
-
 def plot(lc):
     f = pyplot.figure()
     pyplot.scatter(lc["time"].jd, lc["flux"], s=2, alpha=0.5, c="blue")
+    pyplot.axis("off")
     return f
-
-
-def plot_as_data(lc):
-    return plot(lc).canvas.buffer_rgba()
