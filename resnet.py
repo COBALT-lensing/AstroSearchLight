@@ -1,3 +1,4 @@
+import json
 import io
 
 from tqdm.auto import tqdm
@@ -67,6 +68,7 @@ class ResNetFilter(object):
         self, device=None, lr=0.001, scheduler_step_size=5, scheduler_gamma=0.5
     ):
         self.MODEL_SAVE_PATH.parent.mkdir(parents=True, exist_ok=True)
+        self.CLASS_SAVE_PATH = self.MODEL_SAVE_PATH.parent / "model_classes.json"
         if device is not None:
             self.device = device
         else:
@@ -107,6 +109,9 @@ class ResNetFilter(object):
     def train(self, path):
         train_dataset = LightcurveFolderDataSet(root=path, transform=self.transform)
 
+        self.classes = train_dataset.classes
+        print("Training classes:", self.classes)
+
         # Split the dataset into training and testing sets (80% train, 20% test)
         train_size = int(0.8 * len(train_dataset))
         test_size = len(train_dataset) - train_size
@@ -134,9 +139,12 @@ class ResNetFilter(object):
         # Training loop
         epoch = 0
         while True:
-            running_loss = 0.0
+            training_loss = 0.0
+            validation_loss = 0.0
             correct = 0
             total = 0
+
+            epoch += 1
 
             for inputs, labels in tqdm(train_loader, desc="Train", leave=False):
                 inputs, labels = inputs.to(self.device), labels.to(self.device)
@@ -147,6 +155,7 @@ class ResNetFilter(object):
                 # Forward pass
                 outputs = self.model(inputs)
                 loss = self.criterion(outputs, labels)
+                training_loss += loss.item()
 
                 # Backward pass and optimization
                 loss.backward()
@@ -157,7 +166,7 @@ class ResNetFilter(object):
                 outputs = self.model(inputs)
 
                 loss = self.criterion(outputs, labels)
-                running_loss += loss.item()
+                validation_loss += loss.item()
 
                 _, predicted = torch.max(outputs.data, 1)
                 total += labels.size(0)
@@ -170,7 +179,8 @@ class ResNetFilter(object):
             accuracies = accuracies[-self.STOPPING_PATIENCE :]
             accuracy_sigma = numpy.std(accuracies)
             print(
-                f"Epoch [{epoch+1}], Loss: {running_loss:.4f}, "
+                f"Epoch [{epoch}], Training Loss: {training_loss:.4f}, "
+                f"Validation Loss: {validation_loss:.4f}, "
                 f"Accuracy: {accuracies[-1]:.2f}%, Accuracy std: {accuracy_sigma:.2f}"
             )
             if (
@@ -181,9 +191,11 @@ class ResNetFilter(object):
 
     def save(self):
         torch.save(self.model.state_dict(), self.MODEL_SAVE_PATH)
+        json.dump(self.classes, self.CLASS_SAVE_PATH)
 
     def classify(self, dataset):
         self.model.load_state_dict(torch.load(self.MODEL_SAVE_PATH))
+        self.classes = json.load(self.CLASS_SAVE_PATH)
         self.model.eval()
 
         loader = DataLoader(
@@ -199,7 +211,7 @@ class ResNetFilter(object):
                 preds = torch.argmax(outputs, dim=1)
 
             for i in range(len(images)):
-                out_labels[paths[i]] = preds[i].item()
+                out_labels[paths[i]] = [self.classes[preds[i].item()]] + outputs[i]
 
         return out_labels
 
