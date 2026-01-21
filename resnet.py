@@ -60,7 +60,7 @@ class LightcurvePathsDataSet(Dataset):
 class ResNetFilter(object):
     MODEL_SAVE_PATH = Path("data/cnn/model_weights.pth")
     STOPPING_PATIENCE = 5
-    STOPPING_SIGMA = 0.1
+    STOPPING_SIGMA = 5
     LOADER_BATCH_SIZE = 32
     LOADER_WORKERS = 8
 
@@ -91,16 +91,16 @@ class ResNetFilter(object):
         )
 
         self.model = models.resnet34(weights="ResNet34_Weights.IMAGENET1K_V1")
-        self.model.fc = nn.Linear(
-            self.model.fc.in_features, 2
-        )  # Change the output layer to have two classes
+        self.model.fc = nn.Sequential(
+            nn.Dropout(p=0.5), nn.Linear(self.model.fc.in_features, 2)
+        )  # Change the output layer to have two classes with dropout
         self.model = torch.nn.DataParallel(self.model.to(self.device))
 
         self.model.to(self.device)
 
         # Define loss function and optimizer
         self.criterion = nn.CrossEntropyLoss()
-        self.optimizer = optim.Adam(self.model.parameters(), lr=lr)
+        self.optimizer = optim.Adam(self.model.parameters(), lr=lr, weight_decay=1e-4)
 
         self.scheduler = StepLR(
             self.optimizer, step_size=scheduler_step_size, gamma=scheduler_gamma
@@ -135,6 +135,10 @@ class ResNetFilter(object):
         self.model.train()  # Set the model to training mode
 
         accuracies = []
+        validation_losses = []
+        training_losses = []
+
+        final_weights = None
 
         # Training loop
         epoch = 0
@@ -174,28 +178,35 @@ class ResNetFilter(object):
 
             self.scheduler.step()
 
-            # Print statistics
+            training_losses.append(training_loss)
+            validation_losses.append(validation_loss)
+
             accuracies.append(100 * correct / total)
-            accuracies = accuracies[-self.STOPPING_PATIENCE :]
-            accuracy_sigma = numpy.std(accuracies)
+            # accuracies = accuracies[-self.STOPPING_PATIENCE :]
+            validation_sigma = numpy.std(validation_losses[-self.STOPPING_PATIENCE :])
+
             print(
                 f"Epoch [{epoch}], Training Loss: {training_loss:.4f}, "
                 f"Validation Loss: {validation_loss:.4f}, "
-                f"Accuracy: {accuracies[-1]:.2f}%, Accuracy std: {accuracy_sigma:.2f}"
+                f"Accuracy: {accuracies[-1]:.2f}%, Validation std: {validation_sigma:.2f}"
             )
             if (
-                len(accuracies) >= self.STOPPING_PATIENCE
-                and accuracy_sigma <= self.STOPPING_SIGMA
+                len(validation_losses) >= self.STOPPING_PATIENCE
+                and validation_sigma <= self.STOPPING_SIGMA
+                and validation_losses[-1] > validation_losses[-2]
             ):
                 break
+            else:
+                final_weights = self.model.state_dict()
 
-    def save(self):
-        torch.save(self.model.state_dict(), self.MODEL_SAVE_PATH)
-        json.dump(self.classes, self.CLASS_SAVE_PATH)
+        torch.save(final_weights, self.MODEL_SAVE_PATH)
+        with open(self.CLASS_SAVE_PATH, "w") as class_f:
+            json.dump(self.classes, class_f)
 
     def classify(self, dataset):
         self.model.load_state_dict(torch.load(self.MODEL_SAVE_PATH))
-        self.classes = json.load(self.CLASS_SAVE_PATH)
+        with open(self.CLASS_SAVE_PATH, "r") as class_f:
+            self.classes = json.load(class_f)
         self.model.eval()
 
         loader = DataLoader(
@@ -211,7 +222,9 @@ class ResNetFilter(object):
                 preds = torch.argmax(outputs, dim=1)
 
             for i in range(len(images)):
-                out_labels[paths[i]] = [self.classes[preds[i].item()]] + outputs[i]
+                out_labels[paths[i]] = [self.classes[preds[i].item()]] + outputs[
+                    i
+                ].tolist()
 
         return out_labels
 
