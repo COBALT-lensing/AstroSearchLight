@@ -204,7 +204,9 @@ class ResNetFilter(object):
             json.dump(self.classes, class_f)
 
     def classify(self, dataset):
-        self.model.load_state_dict(torch.load(self.MODEL_SAVE_PATH))
+        self.model.load_state_dict(
+            torch.load(self.MODEL_SAVE_PATH, map_location=self.device)
+        )
         with open(self.CLASS_SAVE_PATH, "r") as class_f:
             self.classes = json.load(class_f)
         self.model.eval()
