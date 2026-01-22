@@ -6,4 +6,4 @@ SPOC_URL="https://archive.stsci.edu/hlsps/tess-spoc/download_scripts/hlsp_tess-s
 
 FITS_URLS=$(curl $SPOC_URL | awk '{print$8}' | sed "s/'//g")
 
-echo $FITS_URLS | poetry run python classify_resnet.py -o data/tess_spoc_{$SECTOR}.csv -
+echo $FITS_URLS | poetry run python classify_resnet.py -o data/tess_spoc_$SECTOR.csv -
