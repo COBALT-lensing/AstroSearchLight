@@ -6,6 +6,7 @@ from astropy import units
 from astropy.utils.data import clear_download_cache
 from matplotlib import pyplot
 from pathlib import Path
+from urllib.error import URLError
 
 import warnings
 
@@ -38,7 +39,7 @@ def load_tess(data_uri):
                         ts = read_tess_lightcurve(data_uri)
                     finally:
                         sys.stdout = old_stdout
-            except TimeoutError as e:
+            except (TimeoutError, URLError) as e:
                 if attempt == max_attempts - 1:
                     raise e
                 time.sleep(60 * attempt)

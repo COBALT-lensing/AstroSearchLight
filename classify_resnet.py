@@ -7,7 +7,9 @@ from resnet import ResNetFilter
 import argparse
 
 parser = argparse.ArgumentParser(description="Classify images using ResNet")
-parser.add_argument("input", type=Path, help="Input file or directory")
+parser.add_argument(
+    "input", type=str, help="Input file or directory (use '-' for stdin)"
+)
 parser.add_argument("-o", "--output", type=Path, help="Output CSV file for results")
 # parser.add_argument(
 #     "--skip-existing",
@@ -16,15 +18,11 @@ parser.add_argument("-o", "--output", type=Path, help="Output CSV file for resul
 # )
 args = parser.parse_args()
 
-input_path = args.input
+input_path = Path(args.input) if args.input != "-" else sys.stdin
 results_path = args.output
 # skip_existing = args.skip_existing
 
 if __name__ == "__main__":
-    if not input_path.exists():
-        print(f"{input_path}: Path does not exist", file=sys.stderr)
-        sys.exit(1)
-
     # if results_path is not None and skip_existing:
     #     with open(results_path, "r") as results_f:
     #         r = csv.reader(results_f)
@@ -34,13 +32,20 @@ if __name__ == "__main__":
 
     rn = ResNetFilter()
 
-    if input_path.is_file():
+    if input_path == sys.stdin:
+        paths = input_path.read().split()
+        paths = [p.strip() for p in paths]
+        classifications = rn.classify_paths(paths)
+    elif input_path.is_file():
         with open(input_path, "r") as input_file:
             paths = input_file.readlines()
             paths = [p.strip() for p in paths]
         classifications = rn.classify_paths(paths)
     elif input_path.is_dir():
         classifications = rn.classify_folder(input_path)
+    elif not input_path.exists():
+        print(f"{input_path}: Path does not exist", file=sys.stderr)
+        sys.exit(1)
     else:
         print(f"{input_path}: Is not a directory nor a file.", file=sys.stderr)
         sys.exit(2)
