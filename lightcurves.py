@@ -29,24 +29,23 @@ def features(ts):
 
 def load_tess(data_uri):
     max_attempts = 5
-    try:
-        for attempt in range(max_attempts):
-            try:
-                with open(os.devnull, "w") as devnull:
-                    old_stdout = sys.stdout
-                    sys.stdout = devnull
-                    try:
-                        ts = read_tess_lightcurve(data_uri)
-                    finally:
-                        sys.stdout = old_stdout
-            except (TimeoutError, URLError) as e:
-                if attempt == max_attempts - 1:
-                    raise e
-                time.sleep(60 * attempt)
-                continue
-            break
-    except (FileNotFoundError, ValueError, TypeError):
-        return None
+
+    for attempt in range(max_attempts):
+        try:
+            with open(os.devnull, "w") as devnull:
+                old_stdout = sys.stdout
+                sys.stdout = devnull
+                try:
+                    ts = read_tess_lightcurve(data_uri)
+                finally:
+                    sys.stdout = old_stdout
+        except (TimeoutError, URLError, FileNotFoundError, ValueError, TypeError) as e:
+            if attempt == max_attempts - 1:
+                raise e
+            time.sleep(60 * attempt)
+            continue
+        break
+
     # Trim the first few hours from the start as loads of SPOC light
     # curves seem to start with spurious peaks
     ts = ts[ts["time"] > ts["time"][0] + 3 * units.hour]
@@ -59,7 +58,7 @@ def load_tess(data_uri):
 
 
 def load(lc_path):
-    if "mast:HLSP/tess-spoc/" in lc_path:
+    if "mast:HLSP/tess-spoc/" in str(lc_path):
         return load_tess(lc_path)
     return TimeSeries.read(lc_path, astropy_native=True)
 
