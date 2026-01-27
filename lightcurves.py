@@ -4,6 +4,7 @@ import time
 from astropy.timeseries import TimeSeries
 from astropy import units
 from astropy.utils.data import clear_download_cache
+from astropy.timeseries import LombScargle
 from matplotlib import pyplot
 from pathlib import Path
 from urllib.error import URLError
@@ -18,13 +19,54 @@ import sys
 LC_DATA_PATH = Path("/Users/adam/Code/lc-simulator/data")
 
 
-def features(ts):
+def get_period(lc, times):  # , false_alarm_probability=0.1):
+    # Autopower fails with one point, false_alarm_level fails with exactly three points
+    # In reality the lower limit could be higher but I'm reluctant to set an arbitrary
+    # minimum.
+    if len(times) <= 3:
+        return []
+    # maximum_frequency = 0.5
+    # minimum_frequency = 1.0 / (times[-1] - times[0])
+    ls = LombScargle(times, lc)
+    frequency, power = ls.autopower(
+        # maximum_frequency=maximum_frequency, minimum_frequency=minimum_frequency
+    )
+
+    # fal = ls.false_alarm_level(false_alarm_probability)
+    # frequency = frequency[power > fal]
+    return 1 / frequency[numpy.argmax(power)]
+
+
+def skewness(ts, N, std_flux, mean_flux):
+    stdev3 = std_flux**3
+    N_stdev3 = N * stdev3
+    # Negative to be consistent with value when using magnitudes
+    return -sum([(x - mean_flux) ** 3 / N_stdev3 for x in ts["flux"]])
+
+
+def von_neumann(ts, N, std_flux):
+    stdev2 = std_flux**2
+    N1_stdev2 = (N - 1) * stdev2
+    return sum(
+        [(ts["flux"][i] - ts["flux"][i - 1]) ** 2 / N1_stdev2 for i in range(1, N)]
+    )
+
+
+def features(p):
+    ts = load(p)
     std_flux = numpy.std(ts["flux"])
     mean_flux = numpy.mean(ts["flux"])
-    return {
-        "std_flux": std_flux,
-        "mean_flux": mean_flux,
-    }
+    N = len(ts)
+
+    return numpy.array(
+        (
+            std_flux,
+            mean_flux,
+            get_period(ts["flux"], ts["time"].jd),
+            skewness(ts, N, std_flux, mean_flux),
+            von_neumann(ts, N, std_flux),
+        )
+    )
 
 
 def load_tess(data_uri):
@@ -63,8 +105,12 @@ def load(lc_path):
     return TimeSeries.read(lc_path, astropy_native=True)
 
 
-def load_all(lc_paths):
+def load_all(lc_paths, limit=numpy.inf):
+    x = 0
     for lc_path in lc_paths:
+        x += 1
+        if x > limit:
+            break
         yield load(lc_path)
 
 
