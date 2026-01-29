@@ -101,7 +101,7 @@ class XGBFilter(object):
 
     def _load_dir(self, path):
         paths = list(Path(path).glob("*.fits.gz"))
-        return self._load_paths(paths, desc=str(path))
+        return paths, self._load_paths(paths, desc=str(path))
 
     def _load_paths(self, paths, desc=""):
         if len(desc) > 20:
@@ -119,7 +119,7 @@ class XGBFilter(object):
         ys = []
 
         for y, c in enumerate(paths):
-            xs_c = self._load_dir(c)
+            _, xs_c = self._load_dir(c)
             xs.append(xs_c)
             ys += [y] * len(xs_c)
 
@@ -142,10 +142,26 @@ class XGBFilter(object):
     def classify(self, dataset):
         return self.model.predict(dataset)
 
+    def _classification_dict(self, paths, classifications):
+        return dict(
+            zip(
+                paths,
+                list(
+                    zip(
+                        [self.classes[c] for c in classifications],
+                        [None] * len(classifications),
+                        [None] * len(classifications),
+                    )
+                ),
+            )
+        )
+
     def classify_folder(self, path):
-        dataset = self._load_dir(path)
-        return self.classify(dataset)
+        paths, dataset = self._load_dir(path)
+        classifications = self.classify(dataset)
+        return self._classification_dict(paths, classifications)
 
     def classify_paths(self, paths):
         dataset = self._load_paths(paths)
-        return self.classify(dataset)
+        classifications = self.classify(dataset)
+        return self._classification_dict(paths, classifications)

@@ -54,7 +54,7 @@ if __name__ == "__main__":
             results_w.writerow(["path", "label"] + classifier.classes)
             results_w.writerows(
                 [
-                    [path] + classification
+                    [path] + list(classification)
                     for path, classification in classifications.items()
                 ]
             )
