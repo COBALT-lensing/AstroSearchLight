@@ -107,7 +107,9 @@ class XGBFilter(object):
         if len(desc) > 20:
             desc = "..." + desc[-20:]
         return pandas.concat(
-            process_map(features, paths, desc=f"Loading {desc}", chunksize=1),
+            process_map(
+                features, paths, desc=f"Loading {desc}", chunksize=1, max_workers=8
+            ),
             axis=1,
         ).T
 
