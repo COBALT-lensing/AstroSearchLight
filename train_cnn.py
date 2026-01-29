@@ -1,5 +1,5 @@
 from lightcurves import LC_DATA_PATH
-from resnet import ResNetFilter
+from cnn import ResNetFilter
 
 if __name__ == "__main__":
     filter = ResNetFilter()

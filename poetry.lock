@@ -4632,4 +4632,4 @@ test = ["numpy", "optional-dependencies (>=0.3)", "pytest (>=6)", "pytest-cov (>
 [metadata]
 lock-version = "2.1"
 python-versions = ">=3.13,<3.15"
-content-hash = "c588779d1d7e04892fdb0f9199cb3e02195a4609ffa58eedeb80fc07b62875e5"
+content-hash = "a58dcc1d101728b2d854300e052a5a8601418994b242e8c52950494854519333"

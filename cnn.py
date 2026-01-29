@@ -1,22 +1,20 @@
-import json
 import io
-
-from tqdm.auto import tqdm
-
+import json
 from pathlib import Path
 
 from PIL import Image
+from matplotlib import pyplot
+from tqdm.auto import tqdm
 
+import numpy
 import torch
 import torchvision
 import torchvision.transforms as transforms
-from torchvision import models
 import torch.nn as nn
 import torch.optim as optim
-from torch.utils.data import DataLoader, Dataset
 from torch.optim.lr_scheduler import StepLR
-from matplotlib import pyplot
-import numpy
+from torch.utils.data import DataLoader, Dataset
+from torchvision import models
 
 from lightcurves import plot, load
 
@@ -107,26 +105,27 @@ class ResNetFilter(object):
         )
 
     def train(self, path):
-        train_dataset = LightcurveFolderDataSet(root=path, transform=self.transform)
+        self.train_dataset = LightcurveFolderDataSet(
+            root=path, transform=self.transform
+        )
 
-        self.classes = train_dataset.classes
-        print("Training classes:", self.classes)
+        self.classes = self.train_dataset.classes
 
         # Split the dataset into training and testing sets (80% train, 20% test)
-        train_size = int(0.8 * len(train_dataset))
-        test_size = len(train_dataset) - train_size
-        train_dataset, test_dataset = torch.utils.data.random_split(
-            train_dataset, [train_size, test_size]
+        train_size = int(0.8 * len(self.train_dataset))
+        test_size = len(self.train_dataset) - train_size
+        self.train_dataset, self.test_dataset = torch.utils.data.random_split(
+            self.train_dataset, [train_size, test_size]
         )
 
         train_loader = DataLoader(
-            train_dataset,
+            self.train_dataset,
             batch_size=self.LOADER_BATCH_SIZE,
             shuffle=True,
             num_workers=self.LOADER_WORKERS,
         )
         test_loader = DataLoader(
-            test_dataset,
+            self.test_dataset,
             batch_size=self.LOADER_BATCH_SIZE,
             shuffle=False,
             num_workers=self.LOADER_WORKERS,
