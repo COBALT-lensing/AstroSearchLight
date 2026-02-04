@@ -33,7 +33,7 @@ def load_tess(data_uri):
         except (TimeoutError, URLError, FileNotFoundError, ValueError, TypeError) as e:
             if attempt == max_attempts - 1:
                 raise e
-            print("Error {e} for {data_uri}")
+            print(f"Error {e} for {data_uri}")
             time.sleep(60 * attempt)
             continue
         break
