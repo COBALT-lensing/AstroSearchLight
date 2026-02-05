@@ -7,11 +7,31 @@ from tqdm.contrib.concurrent import process_map
 from upsilont.features import VariabilityFeatures
 
 from lightcurves import load
+import hashlib
+import pickle
+
+FEATURE_CACHE_PATH = "data/features/"
 
 
 def features(p):
+    p_hash = hashlib.md5(str(p).encode()).hexdigest()
+    cache_file = Path(FEATURE_CACHE_PATH) / p_hash[:2] / p_hash[2:4] / f"{p_hash}.pkl"
+
+    if cache_file.exists():
+        try:
+            with open(cache_file, "rb") as f:
+                return pickle.load(f)
+        except (pickle.UnpicklingError, EOFError, ValueError):
+            pass
+
     ts = load(p)
-    return VariabilityFeatures(ts.time.jd, ts["flux"]).get_features()
+    features_data = VariabilityFeatures(ts.time.jd, ts["flux"]).get_features()
+
+    cache_file.parent.mkdir(parents=True, exist_ok=True)
+    with open(cache_file, "wb") as f:
+        pickle.dump(features_data, f)
+
+    return features_data
 
 
 class FeatureFilter(object):
