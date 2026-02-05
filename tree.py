@@ -29,7 +29,7 @@ class XGBFilter(FeatureFilter):
         )
 
         if self.MODEL_PATH.exists():
-            self.model.load_model(self.MODEL_SAVE_PATH)
+            self.model.load_model(self.MODEL_PATH)
 
         if self.CLASS_SAVE_PATH.exists():
             with open(self.CLASS_SAVE_PATH, "r") as class_f:
@@ -46,7 +46,7 @@ class XGBFilter(FeatureFilter):
         preds = self.model.predict(self.test_dataset)
         print(f"Model accuracy: {(preds == self.test_labels).mean() * 100:.2f}%")
 
-        self.model.save_model(self.MODEL_SAVE_PATH)
+        self.model.save_model(self.MODEL_PATH)
         self.classes = [p.name for p in paths]
         with open(self.CLASS_SAVE_PATH, "w") as class_f:
             json.dump(self.classes, class_f)
