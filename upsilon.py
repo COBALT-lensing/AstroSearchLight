@@ -13,7 +13,7 @@ class UpsilonFilter(FeatureFilter):
         self.ut = UPSILoNT()
 
     def train(self, path):
-        xs, ys = self._load_datasets(path)
+        xs, ys, _ = self._load_datasets(path)
         self.ut.transfer(xs, ys, self.MODEL_SAVE_PATH)
 
     def classify(self, dataset):

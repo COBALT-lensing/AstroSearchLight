@@ -36,7 +36,7 @@ class XGBFilter(FeatureFilter):
                 self.classes = json.load(class_f)
 
     def train(self, path):
-        xs, ys = self._load_datasets(path)
+        xs, ys, paths = self._load_datasets(path)
 
         self.train_dataset, self.test_dataset, self.train_labels, self.test_labels = (
             train_test_split(xs, ys, test_size=0.2)

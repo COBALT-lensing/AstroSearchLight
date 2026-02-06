@@ -17,8 +17,13 @@ from torch.utils.data import DataLoader, Dataset
 from torchvision import models
 
 from lightcurves import plot, load
+from filter import cache
+
+IMAGE_DIMS = (224, 224)
+PLOT_CACHE_PATH = "data/plots"
 
 
+@cache
 def load_fits(path):
     lc = load(path)
     f = plot(lc)
@@ -28,7 +33,9 @@ def load_fits(path):
     pyplot.close(f)
     img_buf.seek(0)
     im = Image.open(img_buf)
-    return im.convert("RGB")
+    im = im.convert("RGB").resize(IMAGE_DIMS)
+
+    return im
 
 
 class LightcurveFolderDataSet(torchvision.datasets.DatasetFolder):
@@ -79,7 +86,7 @@ class ResNetFilter(object):
         self.transform = transforms.Compose(
             [
                 transforms.Resize(
-                    (224, 224)
+                    IMAGE_DIMS
                 ),  # Resizing the images to fit ResNet input
                 transforms.ToTensor(),
                 transforms.Normalize(

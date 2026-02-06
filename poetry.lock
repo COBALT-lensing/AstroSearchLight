@@ -642,6 +642,24 @@ files = [
 test = ["pytest"]
 
 [[package]]
+name = "compress-pickle"
+version = "2.1.0"
+description = "Standard pickle, wrapped with standard compression libraries"
+optional = false
+python-versions = ">=3.6"
+groups = ["main"]
+files = [
+    {file = "compress_pickle-2.1.0-py3-none-any.whl", hash = "sha256:598650da4686d9bd97bee185b61e74d7fe1872bb0c23909d5ed2d8793b4a8818"},
+    {file = "compress_pickle-2.1.0.tar.gz", hash = "sha256:3e944ce0eeab5b6331324d62351c957d41c9327c8417d439843e88fe69b77991"},
+]
+
+[package.extras]
+cloudpickle = ["cloudpickle"]
+dill = ["dill"]
+full = ["cloudpickle", "dill", "lz4"]
+lz4 = ["lz4"]
+
+[[package]]
 name = "contourpy"
 version = "1.3.3"
 description = "Python library for calculating contours of 2D quadrilateral grids"
@@ -3959,4 +3977,4 @@ propcache = ">=0.2.1"
 [metadata]
 lock-version = "2.1"
 python-versions = ">=3.13,<3.15"
-content-hash = "14e7fbc252e07ef5668455fe424cc355f45d75c83558e18f39d7502bf4120bf3"
+content-hash = "dc8adb80422a5111fa41e563d331561c8708f35bfb9fd3707cf7c099b5c9487e"
