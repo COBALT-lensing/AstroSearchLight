@@ -9,7 +9,10 @@ from tree import XGBFilter
 
 # Suppress scipy.stats.shapiro UserWarning
 warnings.filterwarnings("ignore", category=UserWarning, message=".*scipy.stats.shapiro")
-
+# Suppress upsilont divide by zero RuntimeWarning
+warnings.filterwarnings(
+    "ignore", category=RuntimeWarning, message=".*divide by zero.*log10"
+)
 
 
 parser = argparse.ArgumentParser(description="Classify images using ResNet or XGBoost")
