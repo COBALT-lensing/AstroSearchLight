@@ -9,9 +9,14 @@ from tree import XGBFilter
 
 # Suppress scipy.stats.shapiro UserWarning
 warnings.filterwarnings("ignore", category=UserWarning, message=".*scipy.stats.shapiro")
-# Suppress upsilont divide by zero RuntimeWarning
+# Suppress upsilont RuntimeWarnings
 warnings.filterwarnings(
     "ignore", category=RuntimeWarning, message=".*divide by zero.*log10"
+)
+warnings.filterwarnings(
+    "ignore",
+    category=RuntimeWarning,
+    message=".*invalid value encountered in scalar divide",
 )
 
 
