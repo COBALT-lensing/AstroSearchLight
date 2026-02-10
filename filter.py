@@ -48,7 +48,7 @@ def cache(func):
 @cache
 def features(p):
     ts = load(p)
-    return VariabilityFeatures(ts.time.jd, ts["flux"]).get_features()
+    return VariabilityFeatures(ts.time.jd, ts["flux"], n_threads=1).get_features()
 
 
 class FeatureFilter(object):
