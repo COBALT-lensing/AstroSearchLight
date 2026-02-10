@@ -3,6 +3,10 @@ import csv
 import sys
 from pathlib import Path
 
+import logging
+
+logging.basicConfig(level=logging.DEBUG)
+
 from cnn import ResNetFilter
 from tree import XGBFilter
 
