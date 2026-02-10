@@ -68,7 +68,7 @@ class FeatureFilter(object):
             desc = "..." + desc[-20:]
         return pandas.DataFrame(
             process_map(
-                features, paths, desc=f"Loading {desc}", chunksize=1, max_workers=8
+                features, paths, desc=f"Loading {desc}", chunksize=1, max_workers=16
             ),
         )
 
