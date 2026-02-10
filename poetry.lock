@@ -3650,7 +3650,7 @@ torch = ">=2.10.0,<3.0.0"
 type = "git"
 url = "https://github.com/COBALT-lensing/UPSILoN-T"
 reference = "HEAD"
-resolved_reference = "18eb0d2cf4b6b3a26e3c4a99645a55a03596b71a"
+resolved_reference = "665be0209e11c9df9307c2707b9fbad36ff83df4"
 
 [[package]]
 name = "urllib3"
