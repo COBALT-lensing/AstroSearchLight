@@ -1,10 +1,16 @@
 import argparse
 import csv
 import sys
+import warnings
 from pathlib import Path
 
 from cnn import ResNetFilter
 from tree import XGBFilter
+
+# Suppress scipy.stats.shapiro UserWarning
+warnings.filterwarnings("ignore", category=UserWarning, message=".*scipy.stats.shapiro")
+
+
 
 parser = argparse.ArgumentParser(description="Classify images using ResNet or XGBoost")
 parser.add_argument(
