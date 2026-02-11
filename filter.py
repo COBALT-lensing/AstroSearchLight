@@ -1,6 +1,8 @@
 import functools
 import hashlib
+import json
 from pathlib import Path
+from pickle import UnpicklingError
 
 import compress_pickle as pickle
 import numpy
@@ -32,7 +34,7 @@ def cache(func):
             try:
                 with open(cache_file, "rb") as f:
                     return pickle.load(f)
-            except (pickle.UnpicklingError, EOFError, ValueError):
+            except (UnpicklingError, EOFError, ValueError):
                 pass
 
         result = func(p, *args, **kwargs)
@@ -58,6 +60,11 @@ class FeatureFilter(object):
         if self.MODEL_SAVE_PATH is None:
             raise RuntimeError("Model save path is not set")
         self.MODEL_SAVE_PATH.mkdir(parents=True, exist_ok=True)
+        self.CLASS_SAVE_PATH = self.MODEL_SAVE_PATH / "model_classes.json"
+
+        if self.CLASS_SAVE_PATH.exists():
+            with open(self.CLASS_SAVE_PATH, "r") as class_f:
+                self.classes = json.load(class_f)
 
     def _load_dir(self, path):
         paths = list(Path(path).glob("*.fits.gz"))
@@ -87,6 +94,11 @@ class FeatureFilter(object):
         xs = pandas.concat(xs)
         ys = numpy.array(ys)
         return xs, ys, paths
+
+    def _save_classes(self, paths):
+        self.classes = [p.name for p in paths]
+        with open(self.CLASS_SAVE_PATH, "w") as class_f:
+            json.dump(self.classes, class_f)
 
     def train(self, path):
         raise NotImplementedError

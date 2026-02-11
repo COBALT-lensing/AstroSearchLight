@@ -237,9 +237,7 @@ class ResNetFilter(object):
         return out_labels
 
     def classify_folder(self, path):
-        return self.classify(
-            LightcurveFolderDataSet(root=path, transform=self.transform)
-        )
+        return self.classify_paths([str(p) for p in Path(path).glob("*.fits.gz")])
 
     def classify_paths(self, paths):
         return self.classify(

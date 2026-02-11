@@ -18,9 +18,14 @@ dependencies = [
     "upsilont @ git+https://github.com/COBALT-lensing/UPSILoN-T",
     "pyfftw (>=0.15.1,<0.16.0)",
     "compress-pickle (>=2.1.0,<3.0.0)",
+    "seaborn (>=0.13.2,<0.14.0)",
 ]
 
 
 [build-system]
 requires = ["poetry-core>=2.0.0,<3.0.0"]
 build-backend = "poetry.core.masonry.api"
+
+[tool.poetry.group.dev.dependencies]
+ipykernel = "^7.2.0"
+

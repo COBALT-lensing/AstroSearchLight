@@ -16,6 +16,7 @@ warnings.filterwarnings("ignore", module="lightkurve.prf")
 from lightkurve.io.tess import read_tess_lightcurve
 
 LC_DATA_PATH = Path("/Users/adam/Code/lc-simulator/data")
+LC_VALIDATION_PATH = Path("/Users/adam/Code/lc-simulator/data.validation")
 
 
 def load_tess(data_uri):
