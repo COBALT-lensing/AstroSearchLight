@@ -6,6 +6,7 @@ from pathlib import Path
 
 from cnn import ResNetFilter
 from tree import XGBFilter
+from upsilon import UpsilonFilter
 
 # Suppress scipy.stats.shapiro UserWarning
 warnings.filterwarnings("ignore", category=UserWarning, message=".*scipy.stats.shapiro")
@@ -40,6 +41,8 @@ if __name__ == "__main__":
         classifier = ResNetFilter()
     elif classifier == "xgboost":
         classifier = XGBFilter()
+    elif classifier == "upsilon":
+        classifier = UpsilonFilter()
     else:
         print("Unknown classifier specified", file=sys.stdout)
         sys.exit(3)
