@@ -67,7 +67,7 @@ class ResNetFilter(object):
     STOPPING_PATIENCE = 5
     STOPPING_SIGMA = 5
     LOADER_BATCH_SIZE = 32
-    LOADER_WORKERS = 8
+    LOADER_WORKERS = 16
 
     def __init__(
         self, device=None, lr=0.001, scheduler_step_size=5, scheduler_gamma=0.5
