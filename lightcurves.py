@@ -7,10 +7,12 @@ import logging
 import numpy
 from pathlib import Path
 from urllib.error import URLError
+import urllib.parse
 
 from astropy import units
 from astropy.timeseries import TimeSeries
 from astropy.utils.data import clear_download_cache
+from lightkurve import search_lightcurve
 from matplotlib import pyplot
 
 warnings.filterwarnings("ignore", module="lightkurve.prf")
@@ -70,6 +72,7 @@ def load_tess(data_uri):
 
 def load(lc_path):
     logger.debug("Loading lightcurve from path/URI: %s", lc_path)
+    if "mast:" in str(lc_path):
         return load_tess(lc_path)
     return TimeSeries.read(lc_path, astropy_native=True)
 
@@ -92,3 +95,30 @@ def plot(lc):
     pyplot.scatter(lc["time"].jd, lc["flux"], s=2, alpha=0.5, c="blue")
     pyplot.axis("off")
     return f
+
+
+MAST_DOWNLOAD_BASE = "https://mast.stsci.edu/api/v0.1/Download/file/?uri="
+
+
+def get_spoc_urls(target_id: int | str) -> list[str]:
+    if isinstance(target_id, int):
+        target_id = f"TIC {target_id}"
+
+    logger.debug("Searching MAST for TESS SPOC URLs for %s", target_id)
+
+    result = search_lightcurve(target_id, mission="TESS", author="SPOC")
+    if len(result) == 0:
+        return []
+
+    table = result.table
+    if "dataURL" not in table.colnames:
+        return []
+
+    urls = [
+        f"{MAST_DOWNLOAD_BASE}{urllib.parse.quote((str(uri)), safe=':/')}"
+        for uri in table["dataURL"]
+        if str(uri).startswith("mast:")
+    ]
+
+    logger.debug("Found %d SPOC URLs for %s", len(urls), target_id)
+    return urls
