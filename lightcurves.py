@@ -28,6 +28,8 @@ from lightkurve.io.tess import read_tess_lightcurve
 from utils import cache
 
 LC_DATA_PATH = Path("/Users/adam/Code/lc-simulator/data")
+if not LC_DATA_PATH.exists():
+    LC_DATA_PATH = Path("/home/anm1u24/Code/lc-filter/data/training")
 LC_VALIDATION_PATH = Path("/Users/adam/Code/lc-simulator/data.validation")
 logger = logging.getLogger(__name__)
 
