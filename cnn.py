@@ -22,6 +22,8 @@ from utils import cache
 IMAGE_DIMS = (224, 224)
 PLOT_CACHE_PATH = "data/plots"
 
+DEFAULT_SPLIT_SIZES = [2, 7, numpy.inf]
+
 
 def plot_to_rgb(f):
     img_buf = io.BytesIO()
@@ -149,7 +151,9 @@ class LightcurveFolderDataSet(torchvision.datasets.DatasetFolder):
         self.samples = [
             (path, class_index, relative_start_days, relative_end_days, split_size_days)
             for path, class_index in base_samples
-            for relative_start_days, relative_end_days, split_size_days in _segment_windows_for_path(path, self.split_sizes)
+            for relative_start_days, relative_end_days, split_size_days in _segment_windows_for_path(
+                path, self.split_sizes
+            )
         ]
         self.imgs = self.samples
         self.targets = [sample[1] for sample in self.samples]
@@ -173,7 +177,9 @@ class LightcurvePathsDataSet(Dataset):
         self.samples = [
             (path, relative_start_days, relative_end_days, split_size_days)
             for path in paths
-            for relative_start_days, relative_end_days, split_size_days in _segment_windows_for_path(path, self.split_sizes)
+            for relative_start_days, relative_end_days, split_size_days in _segment_windows_for_path(
+                path, self.split_sizes
+            )
         ]
         self.include_segment_in_id = not (
             len(self.split_sizes) == 1 and numpy.isinf(self.split_sizes[0])
@@ -183,14 +189,21 @@ class LightcurvePathsDataSet(Dataset):
         return len(self.samples)
 
     def __getitem__(self, idx):
-        path, relative_start_days, relative_end_days, split_size_days = self.samples[idx]
+        path, relative_start_days, relative_end_days, split_size_days = self.samples[
+            idx
+        ]
         image = _load_fits_for_segment(path, relative_start_days, relative_end_days)
 
         if self.transform:
             image = self.transform(image)
 
         if self.include_segment_in_id:
-            return image, (path, split_size_days, relative_start_days, relative_end_days)
+            return image, (
+                path,
+                split_size_days,
+                relative_start_days,
+                relative_end_days,
+            )
 
         return image, path
 
@@ -203,10 +216,16 @@ class ResNetFilter(object):
     LOADER_WORKERS = 16
 
     def __init__(
-        self, device=None, lr=0.001, scheduler_step_size=5, scheduler_gamma=0.5
+        self,
+        device=None,
+        lr=0.001,
+        scheduler_step_size=5,
+        scheduler_gamma=0.5,
+        split_sizes=DEFAULT_SPLIT_SIZES,
     ):
         self.MODEL_SAVE_PATH.parent.mkdir(parents=True, exist_ok=True)
         self.CLASS_SAVE_PATH = self.MODEL_SAVE_PATH.parent / "model_classes.json"
+        self.split_sizes = split_sizes
         if device is not None:
             self.device = device
         else:
@@ -246,7 +265,7 @@ class ResNetFilter(object):
 
     def train(self, path):
         self.train_dataset = LightcurveFolderDataSet(
-            root=path, transform=self.transform
+            root=path, transform=self.transform, split_sizes=self.split_sizes
         )
 
         self.classes = self.train_dataset.classes
@@ -351,7 +370,9 @@ class ResNetFilter(object):
         self.model.eval()
 
         loader = DataLoader(
-            dataset, batch_size=self.LOADER_BATCH_SIZE, num_workers=self.LOADER_WORKERS
+            dataset,
+            batch_size=self.LOADER_BATCH_SIZE,
+            num_workers=self.LOADER_WORKERS,
         )
 
         out_labels = {}
@@ -374,5 +395,7 @@ class ResNetFilter(object):
 
     def classify_paths(self, paths):
         return self.classify(
-            LightcurvePathsDataSet(paths=paths, transform=self.transform)
+            LightcurvePathsDataSet(
+                paths=paths, transform=self.transform, split_sizes=self.split_sizes
+            )
         )
