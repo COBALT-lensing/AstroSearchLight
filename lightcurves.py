@@ -25,6 +25,7 @@ LC_VALIDATION_PATH = Path("/Users/adam/Code/lc-simulator/data.validation")
 logger = logging.getLogger(__name__)
 
 
+@cache
 def load_tess(data_uri):
     max_attempts = 5
     logger.debug(
@@ -62,6 +63,7 @@ def load_tess(data_uri):
     ts = ts[ts["time"] > ts["time"][0] + 3 * units.hour]
     ts["flux"] = ts["flux"].value
     ts["flux_err"] = ts["flux_err"].value
+    ts = ts[["time", "flux", "flux_err"]]
 
     # There isn't an easy way to avoid filling the filesystem with
     # astropy's cache so just delete each file as we process it
