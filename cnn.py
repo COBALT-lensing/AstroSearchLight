@@ -17,49 +17,182 @@ from torch.utils.data import DataLoader, Dataset
 from torchvision import models
 
 from lightcurves import plot, load
-from filter import cache
+from utils import cache
 
 IMAGE_DIMS = (224, 224)
 PLOT_CACHE_PATH = "data/plots"
 
 
-@cache
-def load_fits(path):
-    lc = load(path)
-    f = plot(lc)
-
+def plot_to_rgb(f):
     img_buf = io.BytesIO()
     f.savefig(img_buf, format="png")
     pyplot.close(f)
     img_buf.seek(0)
     im = Image.open(img_buf)
     im = im.convert("RGB").resize(IMAGE_DIMS)
-
     return im
 
 
-class LightcurveFolderDataSet(torchvision.datasets.DatasetFolder):
-    def __init__(self, root, *args, **kwargs):
-        super().__init__(
-            root, load_fits, *args, extensions=(".fits", ".fits.gz"), **kwargs
+@cache
+def load_fits(path):
+    return plot_to_rgb(plot(load(path)))
+
+
+@cache
+def load_fits_segment(path, relative_start_days, relative_end_days):
+    lc = load(path)
+    segment = _segment_lightcurve(lc, relative_start_days, relative_end_days)
+
+    if len(segment) == 0:
+        raise ValueError(
+            f"No points found in segment ({relative_start_days}, {relative_end_days}) "
+            f"for lightcurve {path}"
         )
+
+    return plot_to_rgb(plot(segment))
+
+
+def _relative_time_to_days(relative_time):
+    if hasattr(relative_time, "to_value"):
+        return float(relative_time.to_value("day"))
+    return float(relative_time)
+
+
+def _normalize_split_sizes(split_sizes):
+    if not split_sizes:
+        raise ValueError("split_sizes must not be empty")
+
+    normalized_sizes = []
+    for split_size in split_sizes:
+        split_size_days = _relative_time_to_days(split_size)
+        if split_size_days <= 0:
+            raise ValueError(f"Each split size must be > 0. Got {split_size}.")
+        normalized_sizes.append(split_size_days)
+
+    return normalized_sizes
+
+
+def _resolve_split_sizes(split_sizes):
+    if split_sizes is None:
+        return [numpy.inf]
+    return _normalize_split_sizes(split_sizes)
+
+
+def _segment_lightcurve(lc, relative_start_days, relative_end_days):
+    time_jd = lc["time"].jd
+    start_jd = time_jd[0] + relative_start_days
+    if numpy.isinf(relative_end_days):
+        mask = time_jd >= start_jd
+    else:
+        end_jd = time_jd[0] + relative_end_days
+        mask = (time_jd >= start_jd) & (time_jd < end_jd)
+    return lc[mask]
+
+
+def _segment_windows_for_split_size(path, split_size_days):
+    if numpy.isinf(split_size_days):
+        return [(0.0, numpy.inf, split_size_days)]
+
+    lc = load(path)
+    time_jd = lc["time"].jd
+    duration_days = float(numpy.max(time_jd) - time_jd[0])
+
+    # Include the final segment start if it lands exactly on the duration.
+    n_segments = int(numpy.floor(duration_days / split_size_days)) + 1
+    return [
+        (
+            segment_idx * split_size_days,
+            (segment_idx + 1) * split_size_days,
+            split_size_days,
+        )
+        for segment_idx in range(n_segments)
+    ]
+
+
+def _segment_windows_for_path(path, split_sizes):
+    segment_windows = []
+    for split_size_days in split_sizes:
+        segment_windows.extend(_segment_windows_for_split_size(path, split_size_days))
+    return segment_windows
+
+
+def _is_full_curve_segment(relative_start_days, relative_end_days):
+    return relative_start_days <= 0 and numpy.isinf(relative_end_days)
+
+
+def _load_fits_for_segment(path, relative_start_days, relative_end_days):
+    if _is_full_curve_segment(relative_start_days, relative_end_days):
+        return load_fits(path)
+    return load_fits_segment(path, relative_start_days, relative_end_days)
+
+
+class LightcurveFolderDataSet(torchvision.datasets.DatasetFolder):
+    def __init__(
+        self,
+        root,
+        transform=None,
+        target_transform=None,
+        split_sizes=None,
+        is_valid_file=None,
+    ):
+        super().__init__(
+            root,
+            load_fits,
+            extensions=(".fits", ".fits.gz"),
+            transform=transform,
+            target_transform=target_transform,
+            is_valid_file=is_valid_file,
+        )
+        self.split_sizes = _resolve_split_sizes(split_sizes)
+
+        base_samples = self.samples
+        self.samples = [
+            (path, class_index, relative_start_days, relative_end_days, split_size_days)
+            for path, class_index in base_samples
+            for relative_start_days, relative_end_days, split_size_days in _segment_windows_for_path(path, self.split_sizes)
+        ]
+        self.imgs = self.samples
+        self.targets = [sample[1] for sample in self.samples]
+
+    def __getitem__(self, idx):
+        path, class_index, relative_start_days, relative_end_days, _ = self.samples[idx]
+        image = _load_fits_for_segment(path, relative_start_days, relative_end_days)
+
+        if self.transform:
+            image = self.transform(image)
+        if self.target_transform is not None:
+            class_index = self.target_transform(class_index)
+
+        return image, class_index
 
 
 class LightcurvePathsDataSet(Dataset):
-    def __init__(self, paths, transform=None):
-        self.paths = paths
+    def __init__(self, paths, transform=None, split_sizes=None):
         self.transform = transform
+        self.split_sizes = _resolve_split_sizes(split_sizes)
+        self.samples = [
+            (path, relative_start_days, relative_end_days, split_size_days)
+            for path in paths
+            for relative_start_days, relative_end_days, split_size_days in _segment_windows_for_path(path, self.split_sizes)
+        ]
+        self.include_segment_in_id = not (
+            len(self.split_sizes) == 1 and numpy.isinf(self.split_sizes[0])
+        )
 
     def __len__(self):
-        return len(self.paths)
+        return len(self.samples)
 
     def __getitem__(self, idx):
-        image = load_fits(self.paths[idx])
+        path, relative_start_days, relative_end_days, split_size_days = self.samples[idx]
+        image = _load_fits_for_segment(path, relative_start_days, relative_end_days)
 
         if self.transform:
             image = self.transform(image)
 
-        return image, self.paths[idx]
+        if self.include_segment_in_id:
+            return image, (path, split_size_days, relative_start_days, relative_end_days)
+
+        return image, path
 
 
 class ResNetFilter(object):
