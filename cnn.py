@@ -1,5 +1,6 @@
 import io
 import json
+import os
 from pathlib import Path
 
 from PIL import Image
@@ -121,6 +122,21 @@ def _segment_windows_for_path(path, split_sizes):
     return segment_windows
 
 
+def _limit_segment_windows(segment_windows, max_segments_per_item):
+    if max_segments_per_item is None:
+        return segment_windows
+    if max_segments_per_item <= 0:
+        raise ValueError("max_segments_per_item must be > 0 or None")
+    if len(segment_windows) <= max_segments_per_item:
+        return segment_windows
+
+    # Keep a representative spread across the full lightcurve.
+    indices = numpy.linspace(
+        0, len(segment_windows) - 1, num=max_segments_per_item, dtype=int
+    )
+    return [segment_windows[i] for i in indices]
+
+
 def _is_full_curve_segment(relative_start_days, relative_end_days):
     return relative_start_days <= 0 and numpy.isinf(relative_end_days)
 
@@ -159,11 +175,13 @@ class GroupedLightcurveFolderDataSet(Dataset):
         transform=None,
         target_transform=None,
         split_sizes=None,
+        max_segments_per_item=None,
     ):
         self.root = root
         self.transform = transform
         self.target_transform = target_transform
         self.split_sizes = _resolve_split_sizes(split_sizes)
+        self.max_segments_per_item = max_segments_per_item
         self.classes, self.class_to_idx, self.samples = _find_folder_samples(root)
         self.targets = [sample[1] for sample in self.samples]
 
@@ -175,6 +193,9 @@ class GroupedLightcurveFolderDataSet(Dataset):
         segment_windows = _segment_windows_for_path(path, self.split_sizes)
         if not segment_windows:
             segment_windows = [(0.0, numpy.inf, numpy.inf)]
+        segment_windows = _limit_segment_windows(
+            segment_windows, self.max_segments_per_item
+        )
         images = [
             _load_fits_for_segment(path, relative_start_days, relative_end_days)
             for relative_start_days, relative_end_days, _ in segment_windows
@@ -189,10 +210,13 @@ class GroupedLightcurveFolderDataSet(Dataset):
 
 
 class GroupedLightcurvePathsDataSet(Dataset):
-    def __init__(self, paths, transform=None, split_sizes=None):
+    def __init__(
+        self, paths, transform=None, split_sizes=None, max_segments_per_item=None
+    ):
         self.paths = list(paths)
         self.transform = transform
         self.split_sizes = _resolve_split_sizes(split_sizes)
+        self.max_segments_per_item = max_segments_per_item
 
     def __len__(self):
         return len(self.paths)
@@ -202,6 +226,9 @@ class GroupedLightcurvePathsDataSet(Dataset):
         segment_windows = _segment_windows_for_path(path, self.split_sizes)
         if not segment_windows:
             segment_windows = [(0.0, numpy.inf, numpy.inf)]
+        segment_windows = _limit_segment_windows(
+            segment_windows, self.max_segments_per_item
+        )
         images = [
             _load_fits_for_segment(path, relative_start_days, relative_end_days)
             for relative_start_days, relative_end_days, _ in segment_windows
@@ -233,6 +260,12 @@ def collate_segmented_batch(batch):
         targets = list(targets)
 
     return images, mask, targets
+
+
+def _init_loader_worker(_worker_id):
+    # Keep worker-side CPU parallelism bounded so multiple workers do not
+    # multiply thread count and memory use.
+    torch.set_num_threads(1)
 
 
 class SegmentAwareResNet(nn.Module):
@@ -344,8 +377,10 @@ class ResNetFilter(object):
     MODEL_SAVE_PATH = Path("data/cnn/model_weights.pth")
     STOPPING_PATIENCE = 5
     STOPPING_SIGMA = 5
-    LOADER_BATCH_SIZE = 32
-    LOADER_WORKERS = 16
+    LOADER_BATCH_SIZE = 8
+    LOADER_WORKERS = min(4, max(1, os.cpu_count() or 1))
+    LOADER_PREFETCH_FACTOR = 1
+    MAX_SEGMENTS_PER_ITEM = 24
 
     def __init__(
         self,
@@ -354,6 +389,11 @@ class ResNetFilter(object):
         scheduler_step_size=5,
         scheduler_gamma=0.5,
         split_sizes=DEFAULT_SPLIT_SIZES,
+        loader_batch_size=None,
+        loader_workers=None,
+        loader_prefetch_factor=None,
+        max_segments_per_item=None,
+        use_amp=True,
     ):
         self.MODEL_SAVE_PATH.parent.mkdir(parents=True, exist_ok=True)
         self.CLASS_SAVE_PATH = self.MODEL_SAVE_PATH.parent / "model_classes.json"
@@ -366,6 +406,8 @@ class ResNetFilter(object):
                 if torch.cuda.is_available()
                 else "mps" if torch.mps.is_available() else "cpu"
             )
+        if self.device.type == "cuda":
+            torch.backends.cudnn.benchmark = True
 
         self.transform = transforms.Compose(
             [
@@ -379,10 +421,33 @@ class ResNetFilter(object):
             ]
         )
 
-        self.model = SegmentAwareResNet(num_classes=2)
-        self.model = torch.nn.DataParallel(self.model.to(self.device))
+        self.loader_batch_size = (
+            self.LOADER_BATCH_SIZE
+            if loader_batch_size is None
+            else int(loader_batch_size)
+        )
+        self.loader_workers = (
+            self.LOADER_WORKERS if loader_workers is None else int(loader_workers)
+        )
+        self.loader_prefetch_factor = (
+            self.LOADER_PREFETCH_FACTOR
+            if loader_prefetch_factor is None
+            else int(loader_prefetch_factor)
+        )
+        self.max_segments_per_item = (
+            self.MAX_SEGMENTS_PER_ITEM
+            if max_segments_per_item is None
+            else int(max_segments_per_item)
+        )
+        self.pin_memory = self.device.type == "cuda"
+        self.use_amp = bool(use_amp) and self.device.type == "cuda"
+        self.grad_scaler = torch.amp.GradScaler("cuda", enabled=self.use_amp)
 
-        self.model.to(self.device)
+        base_model = SegmentAwareResNet(num_classes=2).to(self.device)
+        if self.device.type == "cuda" and torch.cuda.device_count() > 1:
+            self.model = torch.nn.DataParallel(base_model)
+        else:
+            self.model = base_model
 
         # Define loss function and optimizer
         self.criterion = nn.CrossEntropyLoss()
@@ -392,11 +457,49 @@ class ResNetFilter(object):
             self.optimizer, step_size=scheduler_step_size, gamma=scheduler_gamma
         )
 
+    def _unwrap_model(self):
+        if isinstance(self.model, torch.nn.DataParallel):
+            return self.model.module
+        return self.model
+
+    def _build_dataloader(self, dataset, shuffle):
+        kwargs = {
+            "dataset": dataset,
+            "batch_size": self.loader_batch_size,
+            "shuffle": shuffle,
+            "num_workers": self.loader_workers,
+            "collate_fn": collate_segmented_batch,
+            "pin_memory": self.pin_memory,
+            "persistent_workers": self.loader_workers > 0,
+        }
+        if self.loader_workers > 0:
+            kwargs["prefetch_factor"] = self.loader_prefetch_factor
+            kwargs["worker_init_fn"] = _init_loader_worker
+        return DataLoader(**kwargs)
+
+    def _load_model_weights(self):
+        state_dict = torch.load(self.MODEL_SAVE_PATH, map_location=self.device)
+        target_model = self._unwrap_model()
+        try:
+            target_model.load_state_dict(state_dict)
+            return
+        except RuntimeError:
+            pass
+
+        # Backward compatibility with checkpoints saved from DataParallel.
+        if all(key.startswith("module.") for key in state_dict.keys()):
+            stripped = {k[len("module.") :]: v for k, v in state_dict.items()}
+            target_model.load_state_dict(stripped)
+            return
+
+        raise RuntimeError("Could not load model weights into SegmentAwareResNet")
+
     def train(self, path):
         self.train_dataset = GroupedLightcurveFolderDataSet(
             root=path,
             transform=self.transform,
             split_sizes=self.split_sizes,
+            max_segments_per_item=self.max_segments_per_item,
         )
 
         self.classes = self.train_dataset.classes
@@ -408,20 +511,8 @@ class ResNetFilter(object):
             self.train_dataset, [train_size, test_size]
         )
 
-        train_loader = DataLoader(
-            self.train_dataset,
-            batch_size=self.LOADER_BATCH_SIZE,
-            shuffle=True,
-            num_workers=self.LOADER_WORKERS,
-            collate_fn=collate_segmented_batch,
-        )
-        test_loader = DataLoader(
-            self.test_dataset,
-            batch_size=self.LOADER_BATCH_SIZE,
-            shuffle=False,
-            num_workers=self.LOADER_WORKERS,
-            collate_fn=collate_segmented_batch,
-        )
+        train_loader = self._build_dataloader(self.train_dataset, shuffle=True)
+        test_loader = self._build_dataloader(self.test_dataset, shuffle=False)
 
         self.model.train()  # Set the model to training mode
 
@@ -442,29 +533,32 @@ class ResNetFilter(object):
             epoch += 1
 
             for inputs, mask, labels in tqdm(train_loader, desc="Train", leave=False):
-                inputs = inputs.to(self.device)
-                mask = mask.to(self.device)
-                labels = labels.to(self.device)
+                inputs = inputs.to(self.device, non_blocking=self.pin_memory)
+                mask = mask.to(self.device, non_blocking=self.pin_memory)
+                labels = labels.to(self.device, non_blocking=self.pin_memory)
 
                 # Zero the parameter gradients
-                self.optimizer.zero_grad()
+                self.optimizer.zero_grad(set_to_none=True)
 
                 # Forward pass
-                outputs = self.model(inputs, mask)
-                loss = self.criterion(outputs, labels)
+                with torch.amp.autocast("cuda", enabled=self.use_amp):
+                    outputs = self.model(inputs, mask)
+                    loss = self.criterion(outputs, labels)
                 training_loss += loss.item()
 
                 # Backward pass and optimization
-                loss.backward()
-                self.optimizer.step()
+                self.grad_scaler.scale(loss).backward()
+                self.grad_scaler.step(self.optimizer)
+                self.grad_scaler.update()
 
             for inputs, mask, labels in tqdm(test_loader, desc="Test", leave=False):
-                inputs = inputs.to(self.device)
-                mask = mask.to(self.device)
-                labels = labels.to(self.device)
-                outputs = self.model(inputs, mask)
-
-                loss = self.criterion(outputs, labels)
+                inputs = inputs.to(self.device, non_blocking=self.pin_memory)
+                mask = mask.to(self.device, non_blocking=self.pin_memory)
+                labels = labels.to(self.device, non_blocking=self.pin_memory)
+                with torch.no_grad():
+                    with torch.amp.autocast("cuda", enabled=self.use_amp):
+                        outputs = self.model(inputs, mask)
+                        loss = self.criterion(outputs, labels)
                 validation_loss += loss.item()
 
                 _, predicted = torch.max(outputs.data, 1)
@@ -492,26 +586,19 @@ class ResNetFilter(object):
             ):
                 break
             else:
-                final_weights = self.model.state_dict()
+                final_weights = self._unwrap_model().state_dict()
 
         torch.save(final_weights, self.MODEL_SAVE_PATH)
         with open(self.CLASS_SAVE_PATH, "w") as class_f:
             json.dump(self.classes, class_f)
 
     def classify(self, dataset):
-        self.model.load_state_dict(
-            torch.load(self.MODEL_SAVE_PATH, map_location=self.device)
-        )
+        self._load_model_weights()
         with open(self.CLASS_SAVE_PATH, "r") as class_f:
             self.classes = json.load(class_f)
         self.model.eval()
 
-        loader = DataLoader(
-            dataset,
-            batch_size=self.LOADER_BATCH_SIZE,
-            num_workers=self.LOADER_WORKERS,
-            collate_fn=collate_segmented_batch,
-        )
+        loader = self._build_dataloader(dataset, shuffle=False)
 
         out_labels = {}
 
@@ -534,6 +621,9 @@ class ResNetFilter(object):
     def classify_paths(self, paths):
         return self.classify(
             GroupedLightcurvePathsDataSet(
-                paths=paths, transform=self.transform, split_sizes=self.split_sizes
+                paths=paths,
+                transform=self.transform,
+                split_sizes=self.split_sizes,
+                max_segments_per_item=self.max_segments_per_item,
             )
         )
