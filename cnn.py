@@ -132,8 +132,9 @@ def _segment_windows_for_split_size(lc, split_size_days, peak_t_jd=None):
         time_jd = lc["time"].jd
         duration_days = float(numpy.max(time_jd) - time_jd[0])
 
-        # Include the final segment start if it lands exactly on the duration.
-        n_segments = int(numpy.floor(duration_days / split_size_days)) + 1
+        # Use ceil here to cover the full duration without adding an extra
+        # end-aligned segment that can contain only a single point.
+        n_segments = max(1, int(numpy.ceil(duration_days / split_size_days)))
         windows = [
             (
                 segment_idx * split_size_days,
