@@ -177,6 +177,142 @@ def _load_fits_for_segment(path, relative_start_days, relative_end_days):
     return load_fits_segment(path, relative_start_days, relative_end_days)
 
 
+def _is_lightcurve_file(path):
+    path_s = str(path)
+    return path_s.endswith(".fits") or path_s.endswith(".fits.gz")
+
+
+def _find_folder_samples(root):
+    root = Path(root)
+    class_dirs = sorted([d for d in root.iterdir() if d.is_dir()])
+    classes = [d.name for d in class_dirs]
+    class_to_idx = {name: idx for idx, name in enumerate(classes)}
+    samples = []
+
+    for class_dir in class_dirs:
+        class_idx = class_to_idx[class_dir.name]
+        for file_path in sorted(class_dir.rglob("*")):
+            if file_path.is_file() and _is_lightcurve_file(file_path):
+                samples.append((str(file_path), class_idx))
+
+    return classes, class_to_idx, samples
+
+
+class GroupedLightcurveFolderDataSet(Dataset):
+    def __init__(
+        self,
+        root,
+        transform=None,
+        target_transform=None,
+        split_sizes=None,
+        peak_t_only=False,
+    ):
+        self.root = root
+        self.transform = transform
+        self.target_transform = target_transform
+        self.split_sizes = _resolve_split_sizes(split_sizes)
+        self.peak_t_only = peak_t_only
+        self.classes, self.class_to_idx, self.samples = _find_folder_samples(root)
+        self.targets = [sample[1] for sample in self.samples]
+
+    def __len__(self):
+        return len(self.samples)
+
+    def __getitem__(self, idx):
+        path, class_idx = self.samples[idx]
+        segment_windows = _segment_windows_for_path(
+            path, self.split_sizes, peak_t_only=self.peak_t_only
+        )
+        if not segment_windows:
+            segment_windows = [(0.0, numpy.inf, numpy.inf)]
+        images = [
+            _load_fits_for_segment(path, relative_start_days, relative_end_days)
+            for relative_start_days, relative_end_days, _ in segment_windows
+        ]
+        if self.transform:
+            images = [self.transform(image) for image in images]
+
+        if self.target_transform is not None:
+            class_idx = self.target_transform(class_idx)
+
+        return images, class_idx
+
+
+class GroupedLightcurvePathsDataSet(Dataset):
+    def __init__(self, paths, transform=None, split_sizes=None, peak_t_only=False):
+        self.paths = list(paths)
+        self.transform = transform
+        self.split_sizes = _resolve_split_sizes(split_sizes)
+        self.peak_t_only = peak_t_only
+
+    def __len__(self):
+        return len(self.paths)
+
+    def __getitem__(self, idx):
+        path = self.paths[idx]
+        segment_windows = _segment_windows_for_path(
+            path, self.split_sizes, peak_t_only=self.peak_t_only
+        )
+        if not segment_windows:
+            segment_windows = [(0.0, numpy.inf, numpy.inf)]
+        images = [
+            _load_fits_for_segment(path, relative_start_days, relative_end_days)
+            for relative_start_days, relative_end_days, _ in segment_windows
+        ]
+        if self.transform:
+            images = [self.transform(image) for image in images]
+        return images, path
+
+
+def collate_segmented_batch(batch):
+    segmented_items, targets = zip(*batch)
+    batch_size = len(segmented_items)
+    max_segments = max(len(item) for item in segmented_items)
+    c, h, w = segmented_items[0][0].shape
+
+    images = torch.zeros(
+        batch_size, max_segments, c, h, w, dtype=segmented_items[0][0].dtype
+    )
+    mask = torch.zeros(batch_size, max_segments, dtype=torch.bool)
+
+    for i, segments in enumerate(segmented_items):
+        seg_count = len(segments)
+        images[i, :seg_count] = torch.stack(segments, dim=0)
+        mask[i, :seg_count] = True
+
+    if isinstance(targets[0], int):
+        targets = torch.tensor(targets, dtype=torch.long)
+    else:
+        targets = list(targets)
+
+    return images, mask, targets
+
+
+class SegmentAwareResNet(nn.Module):
+    def __init__(self, num_classes=2):
+        super().__init__()
+        backbone = models.resnet34(weights="ResNet34_Weights.IMAGENET1K_V1")
+        in_features = backbone.fc.in_features
+        backbone.fc = nn.Identity()
+
+        self.backbone = backbone
+        self.segment_attention = nn.Linear(in_features, 1)
+        self.dropout = nn.Dropout(p=0.5)
+        self.classifier = nn.Linear(in_features, num_classes)
+
+    def forward(self, x, mask):
+        batch_size, n_segments, c, h, w = x.shape
+        features = self.backbone(x.reshape(batch_size * n_segments, c, h, w))
+        features = features.reshape(batch_size, n_segments, -1)
+
+        attention_logits = self.segment_attention(features).squeeze(-1)
+        attention_logits = attention_logits.masked_fill(~mask, float("-inf"))
+        attention = torch.softmax(attention_logits, dim=1)
+        pooled = torch.sum(features * attention.unsqueeze(-1), dim=1)
+
+        return self.classifier(self.dropout(pooled))
+
+
 class LightcurveFolderDataSet(torchvision.datasets.DatasetFolder):
     def __init__(
         self,
@@ -299,10 +435,7 @@ class ResNetFilter(object):
             ]
         )
 
-        self.model = models.resnet34(weights="ResNet34_Weights.IMAGENET1K_V1")
-        self.model.fc = nn.Sequential(
-            nn.Dropout(p=0.5), nn.Linear(self.model.fc.in_features, 2)
-        )  # Change the output layer to have two classes with dropout
+        self.model = SegmentAwareResNet(num_classes=2)
         self.model = torch.nn.DataParallel(self.model.to(self.device))
 
         self.model.to(self.device)
@@ -316,7 +449,7 @@ class ResNetFilter(object):
         )
 
     def train(self, path):
-        self.train_dataset = LightcurveFolderDataSet(
+        self.train_dataset = GroupedLightcurveFolderDataSet(
             root=path,
             transform=self.transform,
             split_sizes=self.split_sizes,
@@ -337,12 +470,14 @@ class ResNetFilter(object):
             batch_size=self.LOADER_BATCH_SIZE,
             shuffle=True,
             num_workers=self.LOADER_WORKERS,
+            collate_fn=collate_segmented_batch,
         )
         test_loader = DataLoader(
             self.test_dataset,
             batch_size=self.LOADER_BATCH_SIZE,
             shuffle=False,
             num_workers=self.LOADER_WORKERS,
+            collate_fn=collate_segmented_batch,
         )
 
         self.model.train()  # Set the model to training mode
@@ -363,14 +498,16 @@ class ResNetFilter(object):
 
             epoch += 1
 
-            for inputs, labels in tqdm(train_loader, desc="Train", leave=False):
-                inputs, labels = inputs.to(self.device), labels.to(self.device)
+            for inputs, mask, labels in tqdm(train_loader, desc="Train", leave=False):
+                inputs = inputs.to(self.device)
+                mask = mask.to(self.device)
+                labels = labels.to(self.device)
 
                 # Zero the parameter gradients
                 self.optimizer.zero_grad()
 
                 # Forward pass
-                outputs = self.model(inputs)
+                outputs = self.model(inputs, mask)
                 loss = self.criterion(outputs, labels)
                 training_loss += loss.item()
 
@@ -378,9 +515,11 @@ class ResNetFilter(object):
                 loss.backward()
                 self.optimizer.step()
 
-            for inputs, labels in tqdm(test_loader, desc="Test", leave=False):
-                inputs, labels = inputs.to(self.device), labels.to(self.device)
-                outputs = self.model(inputs)
+            for inputs, mask, labels in tqdm(test_loader, desc="Test", leave=False):
+                inputs = inputs.to(self.device)
+                mask = mask.to(self.device)
+                labels = labels.to(self.device)
+                outputs = self.model(inputs, mask)
 
                 loss = self.criterion(outputs, labels)
                 validation_loss += loss.item()
@@ -428,20 +567,21 @@ class ResNetFilter(object):
             dataset,
             batch_size=self.LOADER_BATCH_SIZE,
             num_workers=self.LOADER_WORKERS,
+            collate_fn=collate_segmented_batch,
         )
 
         out_labels = {}
 
-        for images, paths in tqdm(loader, desc="Classify batches"):
+        for images, mask, paths in tqdm(loader, desc="Classify batches"):
             images = images.to(self.device)
+            mask = mask.to(self.device)
             with torch.no_grad():
-                outputs = self.model(images)
-                preds = torch.argmax(outputs, dim=1)
+                outputs = self.model(images, mask)
 
-            for i in range(len(images)):
-                out_labels[paths[i]] = [self.classes[preds[i].item()]] + outputs[
-                    i
-                ].tolist()
+            for i, path in enumerate(paths):
+                logits = outputs[i].detach().cpu()
+                pred = int(torch.argmax(logits).item())
+                out_labels[path] = [self.classes[pred]] + logits.tolist()
 
         return out_labels
 
@@ -450,7 +590,7 @@ class ResNetFilter(object):
 
     def classify_paths(self, paths):
         return self.classify(
-            LightcurvePathsDataSet(
+            GroupedLightcurvePathsDataSet(
                 paths=paths, transform=self.transform, split_sizes=self.split_sizes
             )
         )
