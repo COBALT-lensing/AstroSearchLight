@@ -12,9 +12,27 @@ FUNC_CACHE_PATH = "data/cache/"
 def cache(func):
     """Decorator for caching function results to disk."""
 
+    def _is_hashable(value):
+        try:
+            hash(value)
+            return True
+        except TypeError:
+            return False
+
     @functools.wraps(func)
-    def _cache_f(p, *args, **kwargs):
-        p_hash = hashlib.md5(str(p).encode()).hexdigest()
+    def _cache_f(*args, **kwargs):
+        hash_parts = []
+
+        for idx, value in enumerate(args):
+            if _is_hashable(value):
+                hash_parts.append(("arg", idx, type(value).__qualname__, repr(value)))
+
+        for key in sorted(kwargs):
+            value = kwargs[key]
+            if _is_hashable(value):
+                hash_parts.append(("kwarg", key, type(value).__qualname__, repr(value)))
+
+        p_hash = hashlib.md5(repr(tuple(hash_parts)).encode()).hexdigest()
         cache_file = (
             Path(FUNC_CACHE_PATH)
             / func.__name__
@@ -30,7 +48,7 @@ def cache(func):
             except (UnpicklingError, EOFError, ValueError):
                 pass
 
-        result = func(p, *args, **kwargs)
+        result = func(*args, **kwargs)
         cache_file.parent.mkdir(parents=True, exist_ok=True)
         with open(cache_file, "wb") as f:
             pickle.dump(result, f)
