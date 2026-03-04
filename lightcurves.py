@@ -18,6 +18,8 @@ from matplotlib import pyplot
 warnings.filterwarnings("ignore", module="lightkurve.prf")
 from lightkurve.io.tess import read_tess_lightcurve
 
+from utils import cache
+
 LC_DATA_PATH = Path("/Users/adam/Code/lc-simulator/data")
 LC_VALIDATION_PATH = Path("/Users/adam/Code/lc-simulator/data.validation")
 logger = logging.getLogger(__name__)
