@@ -155,9 +155,9 @@ def _segment_windows_for_split_size(lc, split_size_days, peak_t_jd=None):
     ]
 
 
-def _segment_windows_for_path(path, split_sizes):
+def _segment_windows_for_path(path, split_sizes, peak_t_only=False):
     lc = load(path)
-    peak_t_jd = _peak_time_jd(lc)
+    peak_t_jd = _peak_time_jd(lc) if peak_t_only else None
     segment_windows = []
     for split_size_days in split_sizes:
         segment_windows.extend(
@@ -183,6 +183,7 @@ class LightcurveFolderDataSet(torchvision.datasets.DatasetFolder):
         transform=None,
         target_transform=None,
         split_sizes=None,
+        peak_t_only=False,
         is_valid_file=None,
     ):
         super().__init__(
@@ -194,13 +195,14 @@ class LightcurveFolderDataSet(torchvision.datasets.DatasetFolder):
             is_valid_file=is_valid_file,
         )
         self.split_sizes = _resolve_split_sizes(split_sizes)
+        self.peak_t_only = peak_t_only
 
         base_samples = self.samples
         self.samples = [
             (path, class_index, relative_start_days, relative_end_days, split_size_days)
             for path, class_index in base_samples
             for relative_start_days, relative_end_days, split_size_days in _segment_windows_for_path(
-                path, self.split_sizes
+                path, self.split_sizes, peak_t_only=self.peak_t_only
             )
         ]
         self.imgs = self.samples
@@ -219,14 +221,15 @@ class LightcurveFolderDataSet(torchvision.datasets.DatasetFolder):
 
 
 class LightcurvePathsDataSet(Dataset):
-    def __init__(self, paths, transform=None, split_sizes=None):
+    def __init__(self, paths, transform=None, split_sizes=None, peak_t_only=False):
         self.transform = transform
         self.split_sizes = _resolve_split_sizes(split_sizes)
+        self.peak_t_only = peak_t_only
         self.samples = [
             (path, relative_start_days, relative_end_days, split_size_days)
             for path in paths
             for relative_start_days, relative_end_days, split_size_days in _segment_windows_for_path(
-                path, self.split_sizes
+                path, self.split_sizes, peak_t_only=self.peak_t_only
             )
         ]
         self.include_segment_in_id = not (
@@ -313,7 +316,10 @@ class ResNetFilter(object):
 
     def train(self, path):
         self.train_dataset = LightcurveFolderDataSet(
-            root=path, transform=self.transform, split_sizes=self.split_sizes
+            root=path,
+            transform=self.transform,
+            split_sizes=self.split_sizes,
+            peak_t_only=True,
         )
 
         self.classes = self.train_dataset.classes
