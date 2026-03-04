@@ -34,20 +34,9 @@ torchvision = [
     {version = "0.20.1+cpu", markers = "sys_platform == 'linux' and extra != 'cuda'", source = "pytorch-cpu"},
     {version = "0.20.1+cu121", markers = "sys_platform == 'linux' and extra == 'cuda'", source = "pytorch-cu121"},
 ]
-nvidia-cuda-runtime-cu12 = {version = ">=12.1,<13.0", markers = "sys_platform == 'linux' and extra == 'cuda'"}
-nvidia-cuda-nvrtc-cu12 = {version = ">=12.1,<13.0", markers = "sys_platform == 'linux' and extra == 'cuda'"}
-nvidia-cublas-cu12 = {version = ">=12.1,<13.0", markers = "sys_platform == 'linux' and extra == 'cuda'"}
-nvidia-cudnn-cu12 = {version = ">=9.0,<10.0", markers = "sys_platform == 'linux' and extra == 'cuda'"}
 
 [project.optional-dependencies]
-cuda = [
-    "torch",
-    "torchvision",
-    "nvidia-cuda-runtime-cu12",
-    "nvidia-cuda-nvrtc-cu12",
-    "nvidia-cublas-cu12",
-    "nvidia-cudnn-cu12",
-]
+cuda = ["torch", "torchvision"]
 
 
 [tool.poetry.group.dev.dependencies]
