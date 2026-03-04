@@ -91,30 +91,78 @@ def _segment_lightcurve(lc, relative_start_days, relative_end_days):
     return lc[mask]
 
 
-def _segment_windows_for_split_size(path, split_size_days):
+def _peak_time_jd(lc):
+    if "PEAK_T" not in lc.meta:
+        return None
+
+    peak_t = lc.meta["PEAK_T"]
+
+    if hasattr(peak_t, "jd"):
+        return float(peak_t.jd)
+
+    if hasattr(peak_t, "to_value"):
+        for unit in ("jd", "day"):
+            try:
+                return float(peak_t.to_value(unit))
+            except (TypeError, ValueError):
+                pass
+
+    try:
+        return float(peak_t)
+    except (TypeError, ValueError):
+        return None
+
+
+def _segment_includes_timestamp(
+    lc_start_jd, relative_start_days, relative_end_days, timestamp_jd
+):
+    segment_start_jd = lc_start_jd + relative_start_days
+    if timestamp_jd < segment_start_jd:
+        return False
+    if numpy.isinf(relative_end_days):
+        return True
+    segment_end_jd = lc_start_jd + relative_end_days
+    return timestamp_jd < segment_end_jd
+
+
+def _segment_windows_for_split_size(lc, split_size_days, peak_t_jd=None):
     if numpy.isinf(split_size_days):
-        return [(0.0, numpy.inf, split_size_days)]
+        windows = [(0.0, numpy.inf, split_size_days)]
+    else:
+        time_jd = lc["time"].jd
+        duration_days = float(numpy.max(time_jd) - time_jd[0])
 
-    lc = load(path)
-    time_jd = lc["time"].jd
-    duration_days = float(numpy.max(time_jd) - time_jd[0])
+        # Include the final segment start if it lands exactly on the duration.
+        n_segments = int(numpy.floor(duration_days / split_size_days)) + 1
+        windows = [
+            (
+                segment_idx * split_size_days,
+                (segment_idx + 1) * split_size_days,
+                split_size_days,
+            )
+            for segment_idx in range(n_segments)
+        ]
 
-    # Include the final segment start if it lands exactly on the duration.
-    n_segments = int(numpy.floor(duration_days / split_size_days)) + 1
+    if peak_t_jd is None:
+        return windows
+
     return [
-        (
-            segment_idx * split_size_days,
-            (segment_idx + 1) * split_size_days,
-            split_size_days,
+        (relative_start_days, relative_end_days, split_size_days)
+        for relative_start_days, relative_end_days, split_size_days in windows
+        if _segment_includes_timestamp(
+            lc["time"].jd[0], relative_start_days, relative_end_days, peak_t_jd
         )
-        for segment_idx in range(n_segments)
     ]
 
 
 def _segment_windows_for_path(path, split_sizes):
+    lc = load(path)
+    peak_t_jd = _peak_time_jd(lc)
     segment_windows = []
     for split_size_days in split_sizes:
-        segment_windows.extend(_segment_windows_for_split_size(path, split_size_days))
+        segment_windows.extend(
+            _segment_windows_for_split_size(lc, split_size_days, peak_t_jd)
+        )
     return segment_windows
 
 
