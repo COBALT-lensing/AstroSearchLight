@@ -12,10 +12,17 @@ import urllib.parse
 from astropy import units
 from astropy.timeseries import TimeSeries
 from astropy.utils.data import clear_download_cache
-from lightkurve import search_lightcurve
 from matplotlib import pyplot
 
-warnings.filterwarnings("ignore", module="lightkurve.prf")
+# Suppress lightkurve PRF optional dependency warning.
+warnings.filterwarnings(
+    "ignore",
+    category=UserWarning,
+    message=r".*tpfmodel submodule is not available without oktopus installed.*",
+)
+warnings.filterwarnings("ignore", category=UserWarning, module=r"lightkurve\.prf.*")
+
+from lightkurve import search_lightcurve
 from lightkurve.io.tess import read_tess_lightcurve
 
 from utils import cache
