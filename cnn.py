@@ -91,41 +91,7 @@ def _segment_lightcurve(lc, relative_start_days, relative_end_days):
     return lc[mask]
 
 
-def _peak_time_jd(lc):
-    if "PEAK_T" not in lc.meta:
-        return None
-
-    peak_t = lc.meta["PEAK_T"]
-
-    if hasattr(peak_t, "jd"):
-        return float(peak_t.jd)
-
-    if hasattr(peak_t, "to_value"):
-        for unit in ("jd", "day"):
-            try:
-                return float(peak_t.to_value(unit))
-            except (TypeError, ValueError):
-                pass
-
-    try:
-        return float(peak_t)
-    except (TypeError, ValueError):
-        return None
-
-
-def _segment_includes_timestamp(
-    lc_start_jd, relative_start_days, relative_end_days, timestamp_jd
-):
-    segment_start_jd = lc_start_jd + relative_start_days
-    if timestamp_jd < segment_start_jd:
-        return False
-    if numpy.isinf(relative_end_days):
-        return True
-    segment_end_jd = lc_start_jd + relative_end_days
-    return timestamp_jd < segment_end_jd
-
-
-def _segment_windows_for_split_size(lc, split_size_days, peak_t_jd=None):
+def _segment_windows_for_split_size(lc, split_size_days):
     if numpy.isinf(split_size_days):
         windows = [(0.0, numpy.inf, split_size_days)]
     else:
@@ -144,26 +110,14 @@ def _segment_windows_for_split_size(lc, split_size_days, peak_t_jd=None):
             for segment_idx in range(n_segments)
         ]
 
-    if peak_t_jd is None:
-        return windows
-
-    return [
-        (relative_start_days, relative_end_days, split_size_days)
-        for relative_start_days, relative_end_days, split_size_days in windows
-        if _segment_includes_timestamp(
-            lc["time"].jd[0], relative_start_days, relative_end_days, peak_t_jd
-        )
-    ]
+    return windows
 
 
-def _segment_windows_for_path(path, split_sizes, peak_t_only=False):
+def _segment_windows_for_path(path, split_sizes):
     lc = load(path)
-    peak_t_jd = _peak_time_jd(lc) if peak_t_only else None
     segment_windows = []
     for split_size_days in split_sizes:
-        segment_windows.extend(
-            _segment_windows_for_split_size(lc, split_size_days, peak_t_jd)
-        )
+        segment_windows.extend(_segment_windows_for_split_size(lc, split_size_days))
     return segment_windows
 
 
@@ -205,13 +159,11 @@ class GroupedLightcurveFolderDataSet(Dataset):
         transform=None,
         target_transform=None,
         split_sizes=None,
-        peak_t_only=False,
     ):
         self.root = root
         self.transform = transform
         self.target_transform = target_transform
         self.split_sizes = _resolve_split_sizes(split_sizes)
-        self.peak_t_only = peak_t_only
         self.classes, self.class_to_idx, self.samples = _find_folder_samples(root)
         self.targets = [sample[1] for sample in self.samples]
 
@@ -220,9 +172,7 @@ class GroupedLightcurveFolderDataSet(Dataset):
 
     def __getitem__(self, idx):
         path, class_idx = self.samples[idx]
-        segment_windows = _segment_windows_for_path(
-            path, self.split_sizes, peak_t_only=self.peak_t_only
-        )
+        segment_windows = _segment_windows_for_path(path, self.split_sizes)
         if not segment_windows:
             segment_windows = [(0.0, numpy.inf, numpy.inf)]
         images = [
@@ -239,20 +189,17 @@ class GroupedLightcurveFolderDataSet(Dataset):
 
 
 class GroupedLightcurvePathsDataSet(Dataset):
-    def __init__(self, paths, transform=None, split_sizes=None, peak_t_only=False):
+    def __init__(self, paths, transform=None, split_sizes=None):
         self.paths = list(paths)
         self.transform = transform
         self.split_sizes = _resolve_split_sizes(split_sizes)
-        self.peak_t_only = peak_t_only
 
     def __len__(self):
         return len(self.paths)
 
     def __getitem__(self, idx):
         path = self.paths[idx]
-        segment_windows = _segment_windows_for_path(
-            path, self.split_sizes, peak_t_only=self.peak_t_only
-        )
+        segment_windows = _segment_windows_for_path(path, self.split_sizes)
         if not segment_windows:
             segment_windows = [(0.0, numpy.inf, numpy.inf)]
         images = [
@@ -320,7 +267,6 @@ class LightcurveFolderDataSet(torchvision.datasets.DatasetFolder):
         transform=None,
         target_transform=None,
         split_sizes=None,
-        peak_t_only=False,
         is_valid_file=None,
     ):
         super().__init__(
@@ -332,14 +278,13 @@ class LightcurveFolderDataSet(torchvision.datasets.DatasetFolder):
             is_valid_file=is_valid_file,
         )
         self.split_sizes = _resolve_split_sizes(split_sizes)
-        self.peak_t_only = peak_t_only
 
         base_samples = self.samples
         self.samples = [
             (path, class_index, relative_start_days, relative_end_days, split_size_days)
             for path, class_index in base_samples
             for relative_start_days, relative_end_days, split_size_days in _segment_windows_for_path(
-                path, self.split_sizes, peak_t_only=self.peak_t_only
+                path, self.split_sizes
             )
         ]
         self.imgs = self.samples
@@ -358,15 +303,14 @@ class LightcurveFolderDataSet(torchvision.datasets.DatasetFolder):
 
 
 class LightcurvePathsDataSet(Dataset):
-    def __init__(self, paths, transform=None, split_sizes=None, peak_t_only=False):
+    def __init__(self, paths, transform=None, split_sizes=None):
         self.transform = transform
         self.split_sizes = _resolve_split_sizes(split_sizes)
-        self.peak_t_only = peak_t_only
         self.samples = [
             (path, relative_start_days, relative_end_days, split_size_days)
             for path in paths
             for relative_start_days, relative_end_days, split_size_days in _segment_windows_for_path(
-                path, self.split_sizes, peak_t_only=self.peak_t_only
+                path, self.split_sizes
             )
         ]
         self.include_segment_in_id = not (
@@ -453,7 +397,6 @@ class ResNetFilter(object):
             root=path,
             transform=self.transform,
             split_sizes=self.split_sizes,
-            peak_t_only=True,
         )
 
         self.classes = self.train_dataset.classes
