@@ -27,12 +27,12 @@ build-backend = "poetry.core.masonry.api"
 torch = [
     {version = ">=2.5.1,<2.6.0", markers = "sys_platform != 'linux'"},
     {version = "2.5.1+cpu", markers = "sys_platform == 'linux' and extra != 'cuda'", source = "pytorch-cpu"},
-    {version = "2.5.1+cu121", markers = "sys_platform == 'linux' and extra == 'cuda'", source = "pytorch-cu121"},
+    {version = "2.5.1+cu124", markers = "sys_platform == 'linux' and extra == 'cuda'", source = "pytorch-cu124"},
 ]
 torchvision = [
     {version = ">=0.20.1,<0.21.0", markers = "sys_platform != 'linux'"},
     {version = "0.20.1+cpu", markers = "sys_platform == 'linux' and extra != 'cuda'", source = "pytorch-cpu"},
-    {version = "0.20.1+cu121", markers = "sys_platform == 'linux' and extra == 'cuda'", source = "pytorch-cu121"},
+    {version = "0.20.1+cu124", markers = "sys_platform == 'linux' and extra == 'cuda'", source = "pytorch-cu124"},
 ]
 
 [project.optional-dependencies]
@@ -43,8 +43,8 @@ cuda = ["torch", "torchvision"]
 ipykernel = "^7.2.0"
 
 [[tool.poetry.source]]
-name = "pytorch-cu121"
-url = "https://download.pytorch.org/whl/cu121"
+name = "pytorch-cu124"
+url = "https://download.pytorch.org/whl/cu124"
 priority = "explicit"
 
 [[tool.poetry.source]]
