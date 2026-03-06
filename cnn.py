@@ -381,6 +381,7 @@ class ResNetFilter(object):
     LOADER_WORKERS = min(4, max(1, os.cpu_count() or 1))
     LOADER_PREFETCH_FACTOR = 1
     MAX_SEGMENTS_PER_ITEM = 24
+    DEFAULT_NUM_CLASSES = 2
 
     def __init__(
         self,
@@ -443,24 +444,43 @@ class ResNetFilter(object):
         self.use_amp = bool(use_amp) and self.device.type == "cuda"
         self.grad_scaler = torch.amp.GradScaler("cuda", enabled=self.use_amp)
 
-        base_model = SegmentAwareResNet(num_classes=2).to(self.device)
-        if self.device.type == "cuda" and torch.cuda.device_count() > 1:
-            self.model = torch.nn.DataParallel(base_model)
-        else:
-            self.model = base_model
+        self.lr = lr
+        self.weight_decay = 1e-4
+        self.scheduler_step_size = scheduler_step_size
+        self.scheduler_gamma = scheduler_gamma
+        self.num_classes = None
+        self._set_model(self.DEFAULT_NUM_CLASSES)
 
         # Define loss function and optimizer
         self.criterion = nn.CrossEntropyLoss()
-        self.optimizer = optim.Adam(self.model.parameters(), lr=lr, weight_decay=1e-4)
-
-        self.scheduler = StepLR(
-            self.optimizer, step_size=scheduler_step_size, gamma=scheduler_gamma
-        )
+        self._reset_optimizer_and_scheduler()
 
     def _unwrap_model(self):
         if isinstance(self.model, torch.nn.DataParallel):
             return self.model.module
         return self.model
+
+    def _set_model(self, num_classes):
+        num_classes = int(num_classes)
+        if self.num_classes == num_classes and hasattr(self, "model"):
+            return
+
+        base_model = SegmentAwareResNet(num_classes=num_classes).to(self.device)
+        if self.device.type == "cuda" and torch.cuda.device_count() > 1:
+            self.model = torch.nn.DataParallel(base_model)
+        else:
+            self.model = base_model
+        self.num_classes = num_classes
+
+    def _reset_optimizer_and_scheduler(self):
+        self.optimizer = optim.Adam(
+            self.model.parameters(), lr=self.lr, weight_decay=self.weight_decay
+        )
+        self.scheduler = StepLR(
+            self.optimizer,
+            step_size=self.scheduler_step_size,
+            gamma=self.scheduler_gamma,
+        )
 
     def _build_dataloader(self, dataset, shuffle):
         kwargs = {
@@ -503,6 +523,8 @@ class ResNetFilter(object):
         )
 
         self.classes = self.train_dataset.classes
+        self._set_model(len(self.classes))
+        self._reset_optimizer_and_scheduler()
 
         # Split the dataset into training and testing sets (80% train, 20% test)
         train_size = int(0.8 * len(self.train_dataset))
@@ -593,9 +615,10 @@ class ResNetFilter(object):
             json.dump(self.classes, class_f)
 
     def classify(self, dataset):
-        self._load_model_weights()
         with open(self.CLASS_SAVE_PATH, "r") as class_f:
             self.classes = json.load(class_f)
+        self._set_model(len(self.classes))
+        self._load_model_weights()
         self.model.eval()
 
         loader = self._build_dataloader(dataset, shuffle=False)
