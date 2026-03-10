@@ -614,7 +614,7 @@ class ResNetFilter(object):
         with open(self.CLASS_SAVE_PATH, "w") as class_f:
             json.dump(self.classes, class_f)
 
-    def classify(self, dataset):
+    def classify(self, dataset, label=None):
         with open(self.CLASS_SAVE_PATH, "r") as class_f:
             self.classes = json.load(class_f)
         self._set_model(len(self.classes))
@@ -625,7 +625,12 @@ class ResNetFilter(object):
 
         out_labels = {}
 
-        for images, mask, paths in tqdm(loader, desc="Classify batches"):
+        if label is None:
+            label = ''
+        else:
+            label = f' {label}'
+
+        for images, mask, paths in tqdm(loader, desc=f"Classify{label}"):
             images = images.to(self.device)
             mask = mask.to(self.device)
             with torch.no_grad():
@@ -638,10 +643,10 @@ class ResNetFilter(object):
 
         return out_labels
 
-    def classify_folder(self, path):
-        return self.classify_paths([str(p) for p in Path(path).glob("*.fits.gz")])
+    def classify_folder(self, path, label=None):
+        return self.classify_paths([str(p) for p in Path(path).glob("*.fits.gz")], label=label)
 
-    def classify_paths(self, paths):
+    def classify_paths(self, paths, label=None):
         return self.classify(
             GroupedLightcurvePathsDataSet(
                 paths=paths,
