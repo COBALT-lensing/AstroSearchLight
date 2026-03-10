@@ -244,6 +244,12 @@ def collate_segmented_batch(batch):
     max_segments = max(len(item) for item in segmented_items)
     c, h, w = segmented_items[0][0].shape
 
+    # Standard ResNet training expects one image per example. Here each example
+    # is a variable-length list of segment images from the same light curve, so
+    # we pad to the largest segment count in the batch and carry a mask that
+    # marks which segment slots are real. The extra "padded slots" are dummy
+    # zero-filled entries added only so every item in the batch has the same
+    # tensor shape.
     images = torch.zeros(
         batch_size, max_segments, c, h, w, dtype=segmented_items[0][0].dtype
     )
@@ -275,19 +281,41 @@ class SegmentAwareResNet(nn.Module):
         in_features = backbone.fc.in_features
         backbone.fc = nn.Identity()
 
+        # A standard ResNet would send one image embedding directly into its
+        # final classifier. This variant keeps the ResNet as a shared feature
+        # extractor, then learns how to combine multiple segment embeddings from
+        # the same light curve before classification.
         self.backbone = backbone
+        # This small linear layer maps each segment embedding to a single score.
+        # After softmax, those scores become attention weights that tell the
+        # model how much each segment should contribute to the final pooled
+        # light-curve representation.
         self.segment_attention = nn.Linear(in_features, 1)
         self.dropout = nn.Dropout(p=0.5)
         self.classifier = nn.Linear(in_features, num_classes)
 
     def forward(self, x, mask):
         batch_size, n_segments, c, h, w = x.shape
+
+        # Flatten the batch of segment sets so every segment image goes through
+        # the same ResNet backbone independently.
         features = self.backbone(x.reshape(batch_size * n_segments, c, h, w))
         features = features.reshape(batch_size, n_segments, -1)
 
+        # self.segment_attention does not classify segments by itself. It learns
+        # one scalar "importance" score per segment embedding. Softmax
+        # normalizes those scores across the segments of the same light curve,
+        # so segments with larger scores receive more weight in the pooled
+        # representation. Padded slots are the fake zero-filled segment entries
+        # added during batching for shorter light curves; they must be forced to
+        # -inf first so softmax gives them zero attention instead of letting the
+        # model treat missing segments as real observations.
         attention_logits = self.segment_attention(features).squeeze(-1)
         attention_logits = attention_logits.masked_fill(~mask, float("-inf"))
         attention = torch.softmax(attention_logits, dim=1)
+
+        # This is a weighted average over segment embeddings, producing one
+        # feature vector for the full light curve before the final classifier.
         pooled = torch.sum(features * attention.unsqueeze(-1), dim=1)
 
         return self.classifier(self.dropout(pooled))
@@ -626,9 +654,9 @@ class ResNetFilter(object):
         out_labels = {}
 
         if label is None:
-            label = ''
+            label = ""
         else:
-            label = f' {label}'
+            label = f" {label}"
 
         for images, mask, paths in tqdm(loader, desc=f"Classify{label}"):
             images = images.to(self.device)
@@ -644,7 +672,9 @@ class ResNetFilter(object):
         return out_labels
 
     def classify_folder(self, path, label=None):
-        return self.classify_paths([str(p) for p in Path(path).glob("*.fits.gz")], label=label)
+        return self.classify_paths(
+            [str(p) for p in Path(path).glob("*.fits.gz")], label=label
+        )
 
     def classify_paths(self, paths, label=None):
         return self.classify(
