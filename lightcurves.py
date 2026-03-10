@@ -31,6 +31,8 @@ LC_DATA_PATH = Path("/Users/adam/Code/lc-simulator/data")
 if not LC_DATA_PATH.exists():
     LC_DATA_PATH = Path("/home/anm1u24/Code/lc-simulator/data")
 LC_VALIDATION_PATH = Path("/Users/adam/Code/lc-simulator/data.validation")
+if not LC_VALIDATION_PATH.exists():
+    LC_VALIDATION_PATH = Path("/home/anm1u24/Code/lc-simulator/data.validation")
 logger = logging.getLogger(__name__)
 
 
