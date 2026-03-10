@@ -16,6 +16,8 @@ dependencies = [
     "pyfftw (>=0.15.1,<0.16.0)",
     "compress-pickle (>=2.1.0,<3.0.0)",
     "seaborn (>=0.13.2,<0.14.0)",
+    "torch (>=2.10.0,<3.0.0)",
+    "torchvision (>=0.20.1)",
 ]
 
 
@@ -23,35 +25,5 @@ dependencies = [
 requires = ["poetry-core>=2.0.0,<3.0.0"]
 build-backend = "poetry.core.masonry.api"
 
-[tool.poetry.dependencies]
-torch = [
-    {version = ">=2.10.0,<3.0.0", markers = "sys_platform != 'linux'"},
-    {version = ">=2.10.0,<3.0.0", markers = "sys_platform == 'linux' and extra != 'cuda'", source = "pytorch-cpu"},
-    {version = ">=2.10.0,<3.0.0", markers = "sys_platform == 'linux' and extra == 'cuda'", source = "pytorch-cu130"},
-]
-torchvision = [
-    {version = ">=0.20.1", markers = "sys_platform != 'linux'"},
-    {version = ">=0.20.1", markers = "sys_platform == 'linux' and extra != 'cuda'", source = "pytorch-cpu"},
-    {version = ">=0.20.1", markers = "sys_platform == 'linux' and extra == 'cuda'", source = "pytorch-cu130"},
-]
-
-[project.optional-dependencies]
-cuda = ["torch", "torchvision"]
-
-
 [tool.poetry.group.dev.dependencies]
 ipykernel = "^7.2.0"
-
-[[tool.poetry.source]]
-name = "pytorch-cu130"
-url = "https://download.pytorch.org/whl/cu130"
-priority = "explicit"
-
-[[tool.poetry.source]]
-name = "pytorch-cpu"
-url = "https://download.pytorch.org/whl/cpu"
-priority = "explicit"
-
-[[tool.poetry.source]]
-name = "pypi"
-priority = "primary"
