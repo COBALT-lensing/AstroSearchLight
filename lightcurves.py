@@ -10,6 +10,7 @@ from urllib.error import URLError
 import urllib.parse
 
 from astropy import units
+from astropy.time import Time
 from astropy.timeseries import TimeSeries
 from astropy.utils.data import clear_download_cache
 from matplotlib import pyplot
@@ -76,7 +77,8 @@ def load_tess(data_uri):
     # Rebuild a minimal TimeSeries with plain ndarray-backed columns. The
     # original lightkurve object can retain astropy metadata that is not
     # picklable.
-    cleaned_ts = TimeSeries(time=numpy.asarray(ts["time"].jd), time_format="jd")
+    cleaned_time = Time(numpy.asarray(ts["time"].jd), format="jd")
+    cleaned_ts = TimeSeries(time=cleaned_time)
     cleaned_ts["flux"] = numpy.asarray(ts["flux"].value)
     cleaned_ts["flux_err"] = numpy.asarray(ts["flux_err"].value)
 
