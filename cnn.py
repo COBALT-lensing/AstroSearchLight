@@ -406,7 +406,8 @@ class ResNetFilter(object):
     STOPPING_PATIENCE = 5
     STOPPING_SIGMA = 5
     LOADER_BATCH_SIZE = 8
-    LOADER_WORKERS = min(4, max(1, os.cpu_count() or 1))
+    # Limit loader workers to 4, or less if there are fewer CPUs
+    LOADER_WORKERS = min(4, os.cpu_count() or 1)
     LOADER_PREFETCH_FACTOR = 1
     MAX_SEGMENTS_PER_ITEM = 24
     DEFAULT_NUM_CLASSES = 2
