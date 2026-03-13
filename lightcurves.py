@@ -70,19 +70,25 @@ def load_tess(data_uri):
         break
 
     # Trim the first few hours from the start as loads of SPOC light
-    # curves seem to start with spurious peaks
+    # curves seem to start with spurious peaks.
     ts = ts[ts["time"] > ts["time"][0] + 3 * units.hour]
-    ts["flux"] = ts["flux"].value
-    ts["flux_err"] = ts["flux_err"].value
-    ts = ts[["time", "flux", "flux_err"]]
+
+    # Rebuild a minimal TimeSeries with plain ndarray-backed columns. The
+    # original lightkurve object can retain astropy metadata that is not
+    # picklable.
+    cleaned_ts = TimeSeries(time=numpy.asarray(ts["time"].jd), time_format="jd")
+    cleaned_ts["flux"] = numpy.asarray(ts["flux"].value)
+    cleaned_ts["flux_err"] = numpy.asarray(ts["flux_err"].value)
 
     # There isn't an easy way to avoid filling the filesystem with
     # astropy's cache so just delete each file as we process it
     clear_download_cache(data_uri)
     logger.debug(
-        "Loaded and processed TESS lightcurve for %s (rows=%d)", data_uri, len(ts)
+        "Loaded and processed TESS lightcurve for %s (rows=%d)",
+        data_uri,
+        len(cleaned_ts),
     )
-    return ts
+    return cleaned_ts
 
 
 def load(lc_path):
