@@ -1,12 +1,14 @@
 import functools
 import hashlib
+import logging
 from pathlib import Path
-from pickle import UnpicklingError
+from pickle import PicklingError, UnpicklingError
 
 import compress_pickle as pickle
 
 
 FUNC_CACHE_PATH = "data/cache/"
+logger = logging.getLogger(__name__)
 
 
 def cache(func):
@@ -50,8 +52,19 @@ def cache(func):
 
         result = func(*args, **kwargs)
         cache_file.parent.mkdir(parents=True, exist_ok=True)
-        with open(cache_file, "wb") as f:
-            pickle.dump(result, f)
+        try:
+            with open(cache_file, "wb") as f:
+                pickle.dump(result, f)
+        except (PicklingError, AttributeError, TypeError) as exc:
+            # The cache should be best-effort rather than making the underlying
+            # function unusable if the result can't be pickled.
+            cache_file.unlink(missing_ok=True)
+            logger.warning(
+                "Skipping cache write for %s at %s because pickling failed: %s",
+                func.__name__,
+                cache_file,
+                exc,
+            )
 
         return result
 
