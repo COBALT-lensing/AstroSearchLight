@@ -38,7 +38,7 @@ results_path = args.output
 
 if __name__ == "__main__":
     if classifier == "resnet":
-        classifier = ResNetFilter()
+        classifier = ResNetFilter(loader_workers=64)
     elif classifier == "xgboost":
         classifier = XGBFilter()
     elif classifier == "upsilon":
