@@ -1,6 +1,7 @@
 import functools
 import hashlib
 import logging
+import os
 from pathlib import Path
 from pickle import PicklingError, UnpicklingError
 
@@ -9,6 +10,9 @@ import compress_pickle as pickle
 
 FUNC_CACHE_PATH = "data/cache/"
 logger = logging.getLogger(__name__)
+
+
+CACHE_ENABLED = os.environ.get("CACHE_ENABLED", "true").lower() == "true"
 
 
 def cache(func):
@@ -43,7 +47,7 @@ def cache(func):
             / f"{p_hash}.pkl.bz2"  # bz2 seems to be the best for RGB data
         )
 
-        if cache_file.exists():
+        if CACHE_ENABLED and cache_file.exists():
             try:
                 with open(cache_file, "rb") as f:
                     return pickle.load(f)
@@ -51,20 +55,21 @@ def cache(func):
                 pass
 
         result = func(*args, **kwargs)
-        cache_file.parent.mkdir(parents=True, exist_ok=True)
-        try:
-            with open(cache_file, "wb") as f:
-                pickle.dump(result, f)
-        except (PicklingError, AttributeError, TypeError) as exc:
-            # The cache should be best-effort rather than making the underlying
-            # function unusable if the result can't be pickled.
-            cache_file.unlink(missing_ok=True)
-            logger.warning(
-                "Skipping cache write for %s at %s because pickling failed: %s",
-                func.__name__,
-                cache_file,
-                exc,
-            )
+        if CACHE_ENABLED:
+            cache_file.parent.mkdir(parents=True, exist_ok=True)
+            try:
+                with open(cache_file, "wb") as f:
+                    pickle.dump(result, f)
+            except (PicklingError, AttributeError, TypeError) as exc:
+                # The cache should be best-effort rather than making the underlying
+                # function unusable if the result can't be pickled.
+                cache_file.unlink(missing_ok=True)
+                logger.warning(
+                    "Skipping cache write for %s at %s because pickling failed: %s",
+                    func.__name__,
+                    cache_file,
+                    exc,
+                )
 
         return result
 
