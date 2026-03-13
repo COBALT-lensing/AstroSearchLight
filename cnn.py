@@ -47,10 +47,7 @@ def load_fits_segment(path, relative_start_days, relative_end_days):
     segment = _segment_lightcurve(lc, relative_start_days, relative_end_days)
 
     if len(segment) == 0:
-        raise ValueError(
-            f"No points found in segment ({relative_start_days}, {relative_end_days}) "
-            f"for lightcurve {path}"
-        )
+        return None
 
     return plot_to_rgb(plot(segment))
 
@@ -137,12 +134,8 @@ def _limit_segment_windows(segment_windows, max_segments_per_item):
     return [segment_windows[i] for i in indices]
 
 
-def _is_full_curve_segment(relative_start_days, relative_end_days):
-    return relative_start_days <= 0 and numpy.isinf(relative_end_days)
-
-
 def _load_fits_for_segment(path, relative_start_days, relative_end_days):
-    if _is_full_curve_segment(relative_start_days, relative_end_days):
+    if relative_start_days <= 0 and numpy.isinf(relative_end_days):
         return load_fits(path)
     return load_fits_segment(path, relative_start_days, relative_end_days)
 
@@ -200,6 +193,7 @@ class GroupedLightcurveFolderDataSet(Dataset):
             _load_fits_for_segment(path, relative_start_days, relative_end_days)
             for relative_start_days, relative_end_days, _ in segment_windows
         ]
+        images = [i for i in images if i is not None]
         if self.transform:
             images = [self.transform(image) for image in images]
 
@@ -233,6 +227,7 @@ class GroupedLightcurvePathsDataSet(Dataset):
             _load_fits_for_segment(path, relative_start_days, relative_end_days)
             for relative_start_days, relative_end_days, _ in segment_windows
         ]
+        images = [i for i in images if i is not None]
         if self.transform:
             images = [self.transform(image) for image in images]
         return images, path
