@@ -23,7 +23,7 @@ from utils import cache
 IMAGE_DIMS = (224, 224)
 PLOT_CACHE_PATH = "data/plots"
 
-DEFAULT_SPLIT_SIZES = [2, 7, numpy.inf]
+DEFAULT_SPLIT_SIZES = [numpy.inf, 7, 2]
 
 
 def plot_to_rgb(f):
