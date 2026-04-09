@@ -81,6 +81,9 @@ def load_tess(data_uri):
     cleaned_ts = TimeSeries(time=cleaned_time)
     cleaned_ts["flux"] = numpy.asarray(ts["flux"].value)
     cleaned_ts["flux_err"] = numpy.asarray(ts["flux_err"].value)
+    for key in ("RA", "DEC", "TICID", "TARGETID", "SECTOR"):
+        if key in ts.meta:
+            cleaned_ts.meta[key] = ts.meta[key]
 
     # There isn't an easy way to avoid filling the filesystem with
     # astropy's cache so just delete each file as we process it
