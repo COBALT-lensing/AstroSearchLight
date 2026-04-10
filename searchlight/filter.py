@@ -6,7 +6,7 @@ from tqdm.contrib.concurrent import process_map
 
 from lightcurves import load
 from upsilont.features import VariabilityFeatures
-from utils import cache
+from .utils import cache
 
 
 @cache

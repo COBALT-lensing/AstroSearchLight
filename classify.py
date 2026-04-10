@@ -5,9 +5,9 @@ import sys
 import warnings
 from pathlib import Path
 
-from cnn import ResNetFilter
-from tree import XGBFilter
-from upsilon import UpsilonFilter
+from .searchlight.models.simulens import SimuLens
+from .searchlight.models.deprecated.tree import XGBFilter
+from .searchlight.models.deprecated.upsilon import UpsilonFilter
 
 # Suppress scipy.stats.shapiro UserWarning
 warnings.filterwarnings("ignore", category=UserWarning, message=".*scipy.stats.shapiro")
@@ -39,7 +39,7 @@ results_path = args.output
 
 if __name__ == "__main__":
     if classifier == "resnet":
-        classifier = ResNetFilter(loader_workers=32)
+        classifier = SimuLens(loader_workers=32)
     elif classifier == "xgboost":
         classifier = XGBFilter()
     elif classifier == "upsilon":

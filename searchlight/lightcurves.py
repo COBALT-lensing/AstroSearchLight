@@ -26,7 +26,7 @@ warnings.filterwarnings("ignore", category=UserWarning, module=r"lightkurve\.prf
 from lightkurve import search_lightcurve
 from lightkurve.io.tess import read_tess_lightcurve
 
-from utils import cache
+from .utils import cache
 
 LC_DATA_PATH = Path("/Users/adam/Code/lc-simulator/data")
 if not LC_DATA_PATH.exists():

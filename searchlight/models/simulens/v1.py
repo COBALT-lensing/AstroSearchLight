@@ -17,8 +17,8 @@ from torch.optim.lr_scheduler import StepLR
 from torch.utils.data import DataLoader, Dataset
 from torchvision import models
 
-from lightcurves import plot, load
-from utils import cache
+from ...lightcurves import plot, load
+from ...utils import cache
 
 IMAGE_DIMS = (224, 224)
 PLOT_CACHE_PATH = "data/plots"
@@ -396,8 +396,8 @@ class LightcurvePathsDataSet(Dataset):
         return image, path
 
 
-class ResNetFilter(object):
-    MODEL_SAVE_PATH = Path("data/cnn/model_weights.pth")
+class SimuLens(object):
+    MODEL_SAVE_PATH = Path("data/models/simulens/1.0/model_weights.pth")
     STOPPING_PATIENCE = 5
     STOPPING_SIGMA = 5
     LOADER_BATCH_SIZE = 8
