@@ -4,7 +4,7 @@ Vision-based light curve classification.
 
 ## Models
 
-### SimuLens
+### SimuLens
 
 ResNet trained to jointly classify segmented light curves. Light curves are split into segments of 2 days, 7 days, and infinite length (i.e. full light curve). Segments are plotted as scatter plots and the CNN is trained to classify the plots.
 
