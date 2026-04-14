@@ -13,6 +13,7 @@ DEFAULT_RESULT_CACHE_META_PATH = (
     DEFAULT_RESULTS_PATH / "top_resnet_results_cache_meta.json"
 )
 DEFAULT_METADATA_CACHE_PATH = DEFAULT_RESULTS_PATH / "top_resnet_metadata_cache.pkl"
+DEFAULT_SUPPRESSION_PATH = DEFAULT_RESULTS_PATH / "top_resnet_suppressions.txt"
 
 RESULT_COLUMNS = ["path", "label", "lensing"]
 RESULT_DTYPES = {
@@ -130,3 +131,13 @@ def enrich_results_with_metadata(results, cache_path=DEFAULT_METADATA_CACHE_PATH
         on="path",
         how="left",
     )
+
+
+def load_suppression_list(path=DEFAULT_SUPPRESSION_PATH):
+    if not path.exists():
+        return set()
+    return {
+        line.strip()
+        for line in path.read_text().splitlines()
+        if line.strip()
+    }
