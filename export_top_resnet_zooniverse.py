@@ -16,6 +16,7 @@ from searchlight.review_exports import (
 
 DEFAULT_OUTPUT_DIR = Path("data/zooniverse/top_resnet_candidates")
 DEFAULT_MANIFEST_NAME = "manifest.csv"
+MAX_MANIFEST_ROWS = 100_000
 
 
 def parse_args():
@@ -57,6 +58,42 @@ def parse_args():
     )
     return parser.parse_args()
 
+
+def build_manifest_paths(manifest_path, chunk_count):
+    if chunk_count == 1:
+        return [manifest_path]
+
+    suffix = manifest_path.suffix
+    stem = manifest_path.stem
+    return [
+        manifest_path.with_name(f"{stem}_{chunk_index:04d}{suffix}")
+        for chunk_index in range(1, chunk_count + 1)
+    ]
+
+
+def write_manifests(manifest_rows, manifest_path, max_manifest_rows=MAX_MANIFEST_ROWS):
+    chunk_count = max(1, (len(manifest_rows) + max_manifest_rows - 1) // max_manifest_rows)
+    manifest_paths = build_manifest_paths(manifest_path, chunk_count)
+
+    for chunk_index, chunk_path in enumerate(manifest_paths):
+        start = chunk_index * max_manifest_rows
+        end = start + max_manifest_rows
+        manifest = pandas.DataFrame(
+            manifest_rows[start:end],
+            columns=[
+                "filename",
+                "candidate_id",
+                "split_size",
+                "survey",
+                "simulens_score",
+            ],
+        )
+        temp_path = chunk_path.with_suffix(f"{chunk_path.suffix}.tmp")
+        manifest.to_csv(temp_path, index=False)
+        temp_path.replace(chunk_path)
+        print(f"Wrote manifest to {chunk_path}")
+
+
 def export_candidates(
     threshold, results_path, output_dir, limit=None, max_workers=None
 ):
@@ -96,6 +133,8 @@ def export_candidates(
             }
         )
 
+    write_manifests(manifest_rows, manifest_path)
+
     if render_tasks:
         process_map(
             render_candidate_task,
@@ -106,13 +145,6 @@ def export_candidates(
         )
     else:
         print("All images already exist; nothing to render.")
-
-    manifest = pandas.DataFrame(
-        manifest_rows,
-        columns=["filename", "candidate_id", "split_size", "survey", "simulens_score"],
-    )
-    manifest.to_csv(manifest_path, index=False)
-    print(f"Wrote manifest to {manifest_path}")
 
 
 def main():
