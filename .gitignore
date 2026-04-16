@@ -210,3 +210,4 @@ data.*/
 .vscode
 ._*
 .codex
+.DS_Store
