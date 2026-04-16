@@ -80,7 +80,9 @@ def build_manifest_paths(manifest_path, chunk_count):
 
 
 def write_manifests(manifest_rows, manifest_path, max_manifest_rows=MAX_MANIFEST_ROWS):
-    chunk_count = max(1, (len(manifest_rows) + max_manifest_rows - 1) // max_manifest_rows)
+    chunk_count = max(
+        1, (len(manifest_rows) + max_manifest_rows - 1) // max_manifest_rows
+    )
     manifest_paths = build_manifest_paths(manifest_path, chunk_count)
 
     for chunk_index, chunk_path in enumerate(manifest_paths):
@@ -114,7 +116,7 @@ def export_candidates_with_tpf(
     if limit is not None:
         results = results.head(limit).copy()
 
-    image_dir = output_dir / "images"
+    image_dir = output_dir
     manifest_path = output_dir / DEFAULT_MANIFEST_NAME
     output_dir.mkdir(parents=True, exist_ok=True)
     tpf_download_dir.mkdir(parents=True, exist_ok=True)
