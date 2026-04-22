@@ -19,6 +19,7 @@ dependencies = [
     "pyfftw (>=0.15.1,<0.16.0)",
     "compress-pickle (>=2.1.0,<3.0.0)",
     "seaborn (>=0.13.2,<0.14.0)",
+    "panoptes-client (>=1.7.1,<2.0.0)",
 ]
 
 
@@ -28,4 +29,3 @@ build-backend = "poetry.core.masonry.api"
 
 [tool.poetry.group.dev.dependencies]
 ipykernel = "^7.2.0"
-
