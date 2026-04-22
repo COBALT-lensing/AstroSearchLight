@@ -18,6 +18,7 @@ from .lightcurves import load
 
 ZOONIVERSE_UUID_NAMESPACE = uuid.uuid5(uuid.NAMESPACE_DNS, "black-hole-hunters.org")
 TPF_REFERENCE_LOOKBACK_DAYS = 2.0
+DEFAULT_TPF_DOWNLOAD_DIR = Path("data/cache/lightkurve")
 logger = logging.getLogger(__name__)
 
 
@@ -678,7 +679,7 @@ def choose_peak_window(time_days, brightness):
     return left_limit, right_limit, center
 
 
-def render_candidate_plot_with_tpf(path, output_path, tpf_download_dir=None):
+def plot_candidate_plot_with_tpf(path, tpf_download_dir=DEFAULT_TPF_DOWNLOAD_DIR):
     lc = load(path)
     absolute_time_days = numpy.asarray(lc["time"].jd, dtype=float)
     time_zero_jd = absolute_time_days[0]
@@ -770,6 +771,13 @@ def render_candidate_plot_with_tpf(path, output_path, tpf_download_dir=None):
         x_right=x_right,
         lightcurve_median_flux=median_brightness,
     )
+    return fig
+
+
+def render_candidate_plot_with_tpf(
+    path, output_path, tpf_download_dir=DEFAULT_TPF_DOWNLOAD_DIR
+):
+    fig = plot_candidate_plot_with_tpf(path, tpf_download_dir)
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(output_path, dpi=180, bbox_inches="tight")

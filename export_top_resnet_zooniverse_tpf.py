@@ -9,6 +9,7 @@ from searchlight.public_candidate_exports import (
     build_output_name,
     build_output_relative_path,
     render_candidate_tpf_task,
+    DEFAULT_TPF_DOWNLOAD_DIR,
 )
 from searchlight.review_exports import (
     DEFAULT_RESULTS_PATH,
@@ -22,7 +23,7 @@ from searchlight.zooniverse_results import (
 
 DEFAULT_OUTPUT_DIR = Path("data/zooniverse/top_resnet_candidates_tpf")
 DEFAULT_MANIFEST_NAME = "manifest.csv"
-DEFAULT_TPF_DOWNLOAD_DIR = Path("data/cache/lightkurve")
+
 MAX_MANIFEST_ROWS = 100_000
 
 

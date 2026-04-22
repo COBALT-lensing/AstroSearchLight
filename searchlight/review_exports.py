@@ -64,6 +64,8 @@ def load_lensing_results(
     results_path=DEFAULT_RESULTS_PATH,
     result_glob=DEFAULT_RESULT_GLOB,
     min_score=None,
+    cache_path=DEFAULT_RESULT_CACHE_PATH,
+    cache_meta_path=DEFAULT_RESULT_CACHE_META_PATH,
 ):
     result_paths = sorted(results_path.glob(result_glob))
     if not result_paths:
@@ -71,7 +73,11 @@ def load_lensing_results(
             f"No result files matching {result_glob!r} were found in {results_path}"
         )
 
-    results = load_result_frames(result_paths)
+    results = load_result_frames(
+        result_paths,
+        cache_path=cache_path,
+        cache_meta_path=cache_meta_path,
+    )
     results = results[results["label"] == "lensing"].copy()
 
     if min_score is not None:

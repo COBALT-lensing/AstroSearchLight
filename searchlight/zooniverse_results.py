@@ -254,6 +254,70 @@ def select_zooniverse_answer_results(
     return selected
 
 
+def select_zooniverse_subject_results(
+    model_results,
+    subject_ids,
+    subject_metadata_cache_path=DEFAULT_SUBJECT_METADATA_CACHE_PATH,
+):
+    model_results = add_candidate_ids(model_results)
+    candidate_path_map = dict(model_results[["candidate_id", "path"]].values)
+
+    if isinstance(subject_ids, (str, int, float)):
+        subject_ids = [subject_ids]
+
+    rows = []
+    seen_subject_ids = set()
+    for index, subject_id in enumerate(subject_ids):
+        normalized_subject_id = normalize_subject_id(subject_id)
+        if normalized_subject_id is None or normalized_subject_id in seen_subject_ids:
+            continue
+        seen_subject_ids.add(normalized_subject_id)
+        rows.append({"subject_order": index, "subject_id": normalized_subject_id})
+
+    selected = pandas.DataFrame(rows)
+    if selected.empty:
+        return pandas.DataFrame(
+            columns=[
+                "subject_order",
+                "subject_id",
+                "candidate_id",
+                "path",
+                "data.num_votes",
+                "data.agreement",
+                "most_likely_answer",
+                "lensing",
+            ]
+        )
+
+    subject_candidate_map = load_subject_candidate_ids(
+        selected["subject_id"],
+        cache_path=subject_metadata_cache_path,
+    )
+    selected["candidate_id"] = selected["subject_id"].map(subject_candidate_map)
+    selected["path"] = selected["candidate_id"].map(candidate_path_map)
+    selected["data.num_votes"] = pandas.NA
+    selected["data.agreement"] = pandas.NA
+    selected["most_likely_answer"] = pandas.NA
+
+    missing_paths = selected["path"].isna()
+    print(f"Mapped {len(selected) - missing_paths.sum()} subjects to local paths")
+    if missing_paths.any():
+        print(
+            f"Could not map {missing_paths.sum()} subject candidate_ids "
+            "to local result paths"
+        )
+
+    selected = selected[~missing_paths].copy()
+    selected = selected.merge(
+        model_results[["path", "lensing"]],
+        on="path",
+        how="left",
+    )
+    selected.sort_values("subject_order", inplace=True)
+    selected.reset_index(drop=True, inplace=True)
+    return selected
+
+
 def load_answer_results_from_csv(
     model_results,
     zooniverse_results_csv,
