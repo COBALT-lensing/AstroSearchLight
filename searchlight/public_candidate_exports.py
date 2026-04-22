@@ -17,6 +17,7 @@ from lightkurve import read, search_targetpixelfile, search_tesscut
 from .lightcurves import load
 
 ZOONIVERSE_UUID_NAMESPACE = uuid.uuid5(uuid.NAMESPACE_DNS, "black-hole-hunters.org")
+TPF_REFERENCE_LOOKBACK_DAYS = 2.0
 logger = logging.getLogger(__name__)
 
 
@@ -199,7 +200,9 @@ def download_tess_tpf(
     max_attempts=4,
 ):
     if ticid is None and (ra is None or dec is None):
-        raise ValueError("Could not determine a TIC ID or sky position for pixel download")
+        raise ValueError(
+            "Could not determine a TIC ID or sky position for pixel download"
+        )
 
     cache_path = build_tpf_cache_path(
         download_dir=download_dir,
@@ -305,7 +308,27 @@ def download_tess_tpf(
     ) from last_error
 
 
-def summarize_tpf_frames(tpf, window_start_day, window_end_day, time_zero_jd):
+def nanmean_frame(frames):
+    frame_stack = numpy.stack(frames, axis=0)
+    finite = numpy.isfinite(frame_stack)
+    counts = finite.sum(axis=0)
+    totals = numpy.where(finite, frame_stack, 0.0).sum(axis=0)
+    return numpy.divide(
+        totals,
+        counts,
+        out=numpy.full(frame_stack.shape[1:], numpy.nan, dtype=float),
+        where=counts > 0,
+    )
+
+
+def summarize_tpf_frames(
+    tpf,
+    window_start_day,
+    window_end_day,
+    time_zero_jd,
+    peak_day=None,
+    reference_lookback_days=TPF_REFERENCE_LOOKBACK_DAYS,
+):
     flux_cube = flux_to_numpy(tpf.flux)
     if flux_cube.ndim != 3 or len(flux_cube) == 0:
         raise ValueError("Unexpected target pixel file shape")
@@ -317,34 +340,79 @@ def summarize_tpf_frames(tpf, window_start_day, window_end_day, time_zero_jd):
 
     window_start_jd = time_zero_jd + window_start_day
     window_end_jd = time_zero_jd + window_end_day
+    reference_start_jd = window_start_jd - reference_lookback_days
+    reference_frames = finite_frames[
+        (tpf_time_jd[finite_frames] >= reference_start_jd)
+        & (tpf_time_jd[finite_frames] < window_start_jd)
+    ]
     window_frames = finite_frames[
         (tpf_time_jd[finite_frames] >= window_start_jd)
         & (tpf_time_jd[finite_frames] <= window_end_jd)
     ]
     if len(window_frames) == 0:
         window_frames = finite_frames
+    if len(reference_frames) == 0:
+        reference_frames = finite_frames[tpf_time_jd[finite_frames] < window_start_jd]
+    if len(reference_frames) == 0:
+        logger.warning(
+            "No target pixel frames were available before the plotted window; "
+            "using the first plotted-window frame as the reference"
+        )
+        reference_frames = window_frames[:1]
+
+    reference_frame = nanmean_frame(
+        [
+            numpy.array(flux_cube[index], dtype=float, copy=True)
+            for index in reference_frames
+        ]
+    )
 
     sample_times_jd = numpy.linspace(window_start_jd, window_end_jd, 5)
-    frame_indices = []
-    for sample_time_jd in sample_times_jd:
+    peak_sample_index = None
+    if peak_day is not None and numpy.isfinite(peak_day):
+        peak_sample_index = 2
+        peak_jd = numpy.clip(time_zero_jd + peak_day, window_start_jd, window_end_jd)
+        sample_times_jd = numpy.array(
+            [
+                window_start_jd,
+                (window_start_jd + peak_jd) / 2,
+                peak_jd,
+                (peak_jd + window_end_jd) / 2,
+                window_end_jd,
+            ],
+            dtype=float,
+        )
+    frame_indices = [None] * 5
+    used_frame_indices = set()
+    for sample_position, sample_time_jd in enumerate(sample_times_jd):
         nearest = int(
             window_frames[
                 numpy.argmin(numpy.abs(tpf_time_jd[window_frames] - sample_time_jd))
             ]
         )
-        if nearest not in frame_indices:
-            frame_indices.append(nearest)
+        if nearest not in used_frame_indices or sample_position == peak_sample_index:
+            frame_indices[sample_position] = nearest
+            used_frame_indices.add(nearest)
 
-    if len(frame_indices) < 5:
+    if any(index is None for index in frame_indices):
         for candidate in window_frames:
             candidate = int(candidate)
-            if candidate not in frame_indices:
-                frame_indices.append(candidate)
-            if len(frame_indices) == 5:
+            if candidate in used_frame_indices:
+                continue
+            missing_position = next(
+                index
+                for index, frame_index in enumerate(frame_indices)
+                if frame_index is None
+            )
+            frame_indices[missing_position] = candidate
+            used_frame_indices.add(candidate)
+            if all(index is not None for index in frame_indices):
                 break
 
     frames = []
-    for sample_number, index in enumerate(frame_indices[:5], start=1):
+    for sample_number, index in enumerate(frame_indices, start=1):
+        if index is None:
+            continue
         frame = flux_cube[index]
         if numpy.isfinite(frame).any():
             relative_day = tpf_time_jd[index] - time_zero_jd
@@ -352,21 +420,23 @@ def summarize_tpf_frames(tpf, window_start_day, window_end_day, time_zero_jd):
 
     if not frames:
         raise ValueError("No finite target pixel heatmaps available")
+    if not numpy.isfinite(reference_frame).any():
+        raise ValueError("No finite target pixel reference heatmap available")
 
-    return frames
+    return frames, reference_frame
 
 
-def add_tpf_samples_subplot(ax, frames, x_left, x_right, lightcurve_median_flux):
+def add_tpf_samples_subplot(
+    ax,
+    frames,
+    reference_frame,
+    x_left,
+    x_right,
+    lightcurve_median_flux,
+):
     if not numpy.isfinite(lightcurve_median_flux) or lightcurve_median_flux == 0:
         raise ValueError("Light-curve median flux must be finite and non-zero")
 
-    sampled_frames = [
-        numpy.array(frame, dtype=float, copy=True) for _, _, frame in frames[:5]
-    ]
-    reference_frame = numpy.nanmedian(
-        numpy.stack([sampled_frames[0], sampled_frames[-1]], axis=0),
-        axis=0,
-    )
     rendered_frames = []
     difference_values = []
 
@@ -401,14 +471,22 @@ def add_tpf_samples_subplot(ax, frames, x_left, x_right, lightcurve_median_flux)
         ax.spines[spine].set_visible(False)
     ax.spines["bottom"].set_color("#9aa8b6")
 
-    sample_width = min((x_right - x_left) * 0.14, max((x_right - x_left) * 0.08, 0.12))
-    sample_height = 0.72
+    sample_width = min(
+        (x_right - x_left) * 0.207,
+        max((x_right - x_left) * 0.138, 0.207),
+    )
+    sample_height = 0.94
+    sample_bottom = 0.06
 
-    for relative_day, rendered_frame in rendered_frames:
-        left = (relative_day - x_left) / (x_right - x_left)
+    slot_centers = numpy.linspace(x_left, x_right, len(rendered_frames))
+    for slot_center, (relative_day, rendered_frame) in zip(
+        slot_centers,
+        rendered_frames,
+    ):
+        left = (slot_center - x_left) / (x_right - x_left)
         width = sample_width / (x_right - x_left)
         left = numpy.clip(left - width / 2, 0.0, max(0.0, 1.0 - width))
-        inset = ax.inset_axes([left, 0.18, width, sample_height])
+        inset = ax.inset_axes([left, sample_bottom, width, sample_height])
         inset.set_facecolor("#fffdf8")
         frame_to_plot = numpy.array(rendered_frame, copy=True)
         frame_to_plot[~numpy.isfinite(frame_to_plot)] = numpy.nan
@@ -420,17 +498,29 @@ def add_tpf_samples_subplot(ax, frames, x_left, x_right, lightcurve_median_flux)
         )
         inset.set_xticks([])
         inset.set_yticks([])
-        inset.set_xlabel(f"{relative_day:.1f} d", fontsize=7, color="#4c5b67", labelpad=2)
+        inset.set_xlabel(
+            f"{relative_day:.1f} d", fontsize=7, color="#4c5b67", labelpad=2
+        )
         for spine in inset.spines.values():
             spine.set_color("#d6cfc2")
             spine.set_linewidth(1.0)
 
-        ax.plot(
-            [relative_day, relative_day],
-            [0.0, 0.14],
-            color="#c7b9a5",
-            linewidth=1.0,
-            alpha=0.9,
+        ax.annotate(
+            "",
+            xy=(left + width / 2, sample_bottom),
+            xycoords=ax.transAxes,
+            xytext=(relative_day, 0.0),
+            textcoords=ax.transData,
+            arrowprops={
+                "arrowstyle": "-",
+                "color": "#c7b9a5",
+                "linewidth": 1.0,
+                "alpha": 0.9,
+                "shrinkA": 0,
+                "shrinkB": 0,
+            },
+            annotation_clip=False,
+            zorder=1,
         )
 
     tick_values = sorted({round(relative_day, 3) for _, relative_day, _ in frames[:5]})
@@ -458,12 +548,65 @@ def add_tpf_samples_subplot(ax, frames, x_left, x_right, lightcurve_median_flux)
         pad=0.02,
     )
     colorbar.set_label(
-        "Flux difference from reference (normalized)",
+        "Brightness difference",
         color="#23313d",
         fontsize=8,
     )
     colorbar.ax.tick_params(colors="#4c5b67", labelsize=7)
     colorbar.outline.set_edgecolor("#9aa8b6")
+
+
+def plot_full_lightcurve_overview(ax, time_days, brightness, x_left, x_right):
+    finite = numpy.isfinite(time_days) & numpy.isfinite(brightness)
+    if not finite.any():
+        return
+
+    ax.set_facecolor("#fffdf8")
+    ax.scatter(
+        time_days[finite],
+        brightness[finite],
+        s=4,
+        color="#24445c",
+        alpha=0.5,
+        edgecolors="none",
+        zorder=2,
+    )
+    ax.axvspan(
+        x_left,
+        x_right,
+        color="#d7c5a5",
+        alpha=0.42,
+        linewidth=0,
+        zorder=1,
+    )
+    ax.set_xlim(
+        float(numpy.nanmin(time_days[finite])),
+        float(numpy.nanmax(time_days[finite])),
+    )
+    y_min = float(numpy.nanmin(brightness[finite]))
+    y_max = float(numpy.nanmax(brightness[finite]))
+    if y_min < y_max:
+        y_padding = max((y_max - y_min) * 0.08, 0.005)
+        ax.set_ylim(y_min - y_padding, y_max + y_padding)
+
+    for spine in ("top", "right"):
+        ax.spines[spine].set_visible(False)
+    ax.spines["left"].set_color("#9aa8b6")
+    ax.spines["bottom"].set_color("#9aa8b6")
+    ax.tick_params(colors="#4c5b67", labelsize=8)
+    ax.xaxis.set_major_formatter(FormatStrFormatter("%.1f"))
+    ax.set_xlabel("Time (days)", color="#23313d")
+    ax.set_ylabel("Brightness", color="#23313d")
+    ax.set_title(
+        "Full light curve",
+        fontsize=9,
+        color="#23313d",
+        loc="left",
+        pad=6,
+    )
+    ax.grid(axis="y", color="#d8dfdf", linewidth=0.8, alpha=0.65)
+    for spine in ax.spines.values():
+        spine.set_color("#d6cfc2")
 
 
 def smooth_series(values, window=11):
@@ -532,7 +675,7 @@ def choose_peak_window(time_days, brightness):
         left_limit = time_days[0]
         right_limit = time_days[-1]
 
-    return left_limit, right_limit
+    return left_limit, right_limit, center
 
 
 def render_candidate_plot_with_tpf(path, output_path, tpf_download_dir=None):
@@ -553,19 +696,19 @@ def render_candidate_plot_with_tpf(path, output_path, tpf_download_dir=None):
     if numpy.isfinite(median_brightness) and median_brightness != 0:
         brightness = brightness / median_brightness
 
-    x_left, x_right = choose_peak_window(time_days, brightness)
+    x_left, x_right, peak_day = choose_peak_window(time_days, brightness)
 
-    fig, (ax_tpf, ax) = pyplot.subplots(
-        2,
+    fig, (ax_tpf, ax, ax_overview) = pyplot.subplots(
+        3,
         1,
-        figsize=(10, 6.2),
+        figsize=(10, 7.0),
         constrained_layout=True,
-        gridspec_kw={"height_ratios": [1.2, 3.0]},
-        sharex=True,
+        gridspec_kw={"height_ratios": [2.2, 1.0, 1.0]},
     )
     fig.patch.set_facecolor("#f7f4ea")
     ax_tpf.set_facecolor("#fffdf8")
     ax.set_facecolor("#fffdf8")
+    ax_overview.set_facecolor("#fffdf8")
 
     ax.scatter(
         time_days,
@@ -583,13 +726,6 @@ def render_candidate_plot_with_tpf(path, output_path, tpf_download_dir=None):
     ax.spines["bottom"].set_color("#9aa8b6")
     ax.grid(axis="y", color="#d8dfdf", linewidth=0.8, alpha=0.8)
 
-    ax.set_xlabel("Time (days)", color="#23313d")
-    ax.set_ylabel("Brightness", color="#23313d")
-    ax.tick_params(colors="#4c5b67")
-    ax.xaxis.set_major_formatter(FormatStrFormatter("%.1f"))
-    ax.set_xlim(x_left, x_right)
-    ax.set_title("Light curve", fontsize=9, color="#23313d", loc="left", pad=8)
-
     ticid, sector, ra, dec = extract_tess_tpf_metadata(path)
     tpf = download_tess_tpf(
         ticid=ticid,
@@ -598,15 +734,38 @@ def render_candidate_plot_with_tpf(path, output_path, tpf_download_dir=None):
         dec=dec,
         download_dir=tpf_download_dir,
     )
-    frames = summarize_tpf_frames(
+    frames, reference_frame = summarize_tpf_frames(
         tpf,
         window_start_day=x_left,
         window_end_day=x_right,
         time_zero_jd=time_zero_jd,
+        peak_day=peak_day,
     )
+
+    ax.set_xlabel("Time (days)", color="#23313d")
+    ax.set_ylabel("Brightness", color="#23313d")
+    ax.tick_params(colors="#4c5b67")
+    ax.xaxis.set_major_formatter(FormatStrFormatter("%.1f"))
+    ax.set_xlim(x_left, x_right)
+    ax.set_title(
+        "Zoomed light curve",
+        fontsize=9,
+        color="#23313d",
+        loc="left",
+        pad=8,
+    )
+    plot_full_lightcurve_overview(
+        ax_overview,
+        time_days,
+        brightness,
+        x_left,
+        x_right,
+    )
+
     add_tpf_samples_subplot(
         ax_tpf,
         frames,
+        reference_frame,
         x_left=x_left,
         x_right=x_right,
         lightcurve_median_flux=median_brightness,
