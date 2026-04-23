@@ -368,7 +368,11 @@ def summarize_tpf_frames(
         ]
     )
 
-    sample_times_jd = numpy.linspace(window_start_jd, window_end_jd, 5)
+    window_span_jd = window_end_jd - window_start_jd
+    sample_times_jd = window_start_jd + window_span_jd * numpy.array(
+        [0.0, 0.4, 0.5, 0.6, 1.0],
+        dtype=float,
+    )
     peak_sample_index = None
     if peak_day is not None and numpy.isfinite(peak_day):
         peak_sample_index = 2
@@ -376,9 +380,17 @@ def summarize_tpf_frames(
         sample_times_jd = numpy.array(
             [
                 window_start_jd,
-                (window_start_jd + peak_jd) / 2,
+                numpy.clip(
+                    peak_jd - window_span_jd * 0.1,
+                    window_start_jd,
+                    window_end_jd,
+                ),
                 peak_jd,
-                (peak_jd + window_end_jd) / 2,
+                numpy.clip(
+                    peak_jd + window_span_jd * 0.1,
+                    window_start_jd,
+                    window_end_jd,
+                ),
                 window_end_jd,
             ],
             dtype=float,
@@ -472,10 +484,7 @@ def add_tpf_samples_subplot(
         ax.spines[spine].set_visible(False)
     ax.spines["bottom"].set_color("#9aa8b6")
 
-    sample_width = min(
-        (x_right - x_left) * 0.207,
-        max((x_right - x_left) * 0.138, 0.207),
-    )
+    sample_width = 0.144
     sample_height = 0.94
     sample_bottom = 0.06
 
@@ -485,7 +494,7 @@ def add_tpf_samples_subplot(
         rendered_frames,
     ):
         left = (slot_center - x_left) / (x_right - x_left)
-        width = sample_width / (x_right - x_left)
+        width = sample_width
         left = numpy.clip(left - width / 2, 0.0, max(0.0, 1.0 - width))
         inset = ax.inset_axes([left, sample_bottom, width, sample_height])
         inset.set_facecolor("#fffdf8")
@@ -625,9 +634,17 @@ def smooth_series(values, window=11):
 
 def choose_peak_window(time_days, brightness):
     median_level = 1.0
-    smoothed = smooth_series(brightness, window=min(21, max(5, len(brightness) // 40)))
+    smoothing_window = min(21, max(5, len(brightness) // 40))
+    smoothed = smooth_series(brightness, window=smoothing_window)
     deviation = numpy.abs(smoothed - median_level)
-    peak_index = int(numpy.nanargmax(deviation))
+    positive_deviation = smoothed - median_level
+    peak_index = int(numpy.nanargmax(positive_deviation))
+    peak_deviation = positive_deviation[peak_index]
+    total_span = max(time_days[-1] - time_days[0], 0.0)
+    minimum_half_width = max(total_span * 0.0075, 0.075)
+
+    if not numpy.isfinite(peak_deviation) or peak_deviation <= 0:
+        return time_days[0], time_days[-1], time_days[peak_index]
 
     local_scatter = numpy.nanmedian(numpy.abs(brightness - smoothed))
     if not numpy.isfinite(local_scatter) or local_scatter == 0:
@@ -635,32 +652,40 @@ def choose_peak_window(time_days, brightness):
     if not numpy.isfinite(local_scatter) or local_scatter == 0:
         local_scatter = 0.01
     return_tolerance = max(local_scatter * 2.5, 0.01)
+    if numpy.isfinite(peak_deviation) and peak_deviation > 0:
+        return_tolerance = min(return_tolerance, peak_deviation * 0.5)
 
-    left_return = None
-    for idx in range(peak_index, -1, -1):
-        if abs(smoothed[idx] - median_level) <= return_tolerance:
-            left_return = idx
-            break
+    baseline_hold_days = minimum_half_width
 
-    right_return = None
-    for idx in range(peak_index, len(smoothed)):
-        if abs(smoothed[idx] - median_level) <= return_tolerance:
-            right_return = idx
-            break
+    def excursion_boundary(direction):
+        last_excursion_index = peak_index
+        baseline_start_index = None
+        idx = peak_index + direction
 
-    if left_return is None:
-        left_span = time_days[peak_index] - time_days[0]
-    else:
-        left_span = time_days[peak_index] - time_days[left_return]
+        while 0 <= idx < len(smoothed):
+            if deviation[idx] > return_tolerance:
+                last_excursion_index = idx
+                baseline_start_index = None
+            elif baseline_start_index is None:
+                baseline_start_index = idx
+            elif (
+                abs(time_days[idx] - time_days[baseline_start_index])
+                >= baseline_hold_days
+            ):
+                return last_excursion_index
+            idx += direction
 
-    if right_return is None:
-        right_span = time_days[-1] - time_days[peak_index]
-    else:
-        right_span = time_days[right_return] - time_days[peak_index]
+        if last_excursion_index != peak_index:
+            return last_excursion_index
+        return 0 if direction < 0 else len(smoothed) - 1
+
+    left_boundary = excursion_boundary(-1)
+    right_boundary = excursion_boundary(1)
+
+    left_span = time_days[peak_index] - time_days[left_boundary]
+    right_span = time_days[right_boundary] - time_days[peak_index]
 
     half_width = max(left_span, right_span)
-    total_span = max(time_days[-1] - time_days[0], 0.0)
-    minimum_half_width = max(total_span * 0.03, 0.15)
     half_width = max(half_width * 1.15, minimum_half_width)
 
     center = time_days[peak_index]
@@ -704,7 +729,7 @@ def plot_candidate_plot_with_tpf(path, tpf_download_dir=DEFAULT_TPF_DOWNLOAD_DIR
         1,
         figsize=(10, 7.0),
         constrained_layout=True,
-        gridspec_kw={"height_ratios": [2.2, 1.0, 1.0]},
+        gridspec_kw={"height_ratios": [1.0, 1.0, 1.0]},
     )
     fig.patch.set_facecolor("#f7f4ea")
     ax_tpf.set_facecolor("#fffdf8")
