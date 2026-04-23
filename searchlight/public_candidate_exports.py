@@ -19,16 +19,40 @@ from .lightcurves import load
 ZOONIVERSE_UUID_NAMESPACE = uuid.uuid5(uuid.NAMESPACE_DNS, "black-hole-hunters.org")
 TPF_REFERENCE_LOOKBACK_DAYS = 2.0
 DEFAULT_TPF_DOWNLOAD_DIR = Path("data/cache/lightkurve")
+
+TPF_FRAME_SAMPLE_FRACTIONS = numpy.array([0.0, 0.4, 0.5, 0.6, 1.0], dtype=float)
+TPF_PEAK_SAMPLE_INDEX = 2
+TPF_PEAK_NEARBY_SAMPLE_FRACTION = 0.1
+TPF_HEATMAP_COUNT = 5
+TPF_HEATMAP_WIDTH = 0.144
+TPF_HEATMAP_HEIGHT = 0.94
+TPF_HEATMAP_BOTTOM = 0.06
+TPF_DIFF_LIMIT_PERCENTILE = 90
+TPF_MIN_ABS_DIFF_LIMIT = 0.005
+
+PEAK_BASELINE_FLUX = 1.0
+PEAK_SMOOTH_MAX_WINDOW = 21
+PEAK_SMOOTH_MIN_WINDOW = 5
+PEAK_SMOOTH_POINT_FRACTION = 40
+PEAK_MIN_HALF_WIDTH_FRACTION = 0.0075
+PEAK_MIN_HALF_WIDTH_DAYS = 0.075
+PEAK_LOCAL_SCATTER_MULTIPLIER = 2.5
+PEAK_MIN_RETURN_TOLERANCE = 0.01
+PEAK_RETURN_TOLERANCE_FRACTION = 0.5
+PEAK_WINDOW_PADDING_FACTOR = 1.15
+
 logger = logging.getLogger(__name__)
 
 
 def flux_to_numpy(flux):
+    """Return a plain float NumPy array from a Lightkurve flux-like object."""
     if hasattr(flux, "value"):
         flux = flux.value
     return numpy.asarray(flux, dtype=float)
 
 
 def clear_corrupt_lightkurve_download(exc):
+    """Remove a cached Lightkurve download mentioned by a known corruption error."""
     message = str(exc)
     path_match = None
     if "buffer is too small for requested array" in message:
@@ -49,6 +73,7 @@ def clear_corrupt_lightkurve_download(exc):
 
 
 def build_tpf_cache_path(download_dir, ticid, sector=None, ra=None, dec=None):
+    """Build the deterministic local cache path for downloaded TESS pixel data."""
     cache_root = Path(download_dir) / "cached_tpfs"
     cache_key = repr(
         {
@@ -63,6 +88,7 @@ def build_tpf_cache_path(download_dir, ticid, sector=None, ra=None, dec=None):
 
 
 def search_tesscut_pixel_data(sector=None, ra=None, dec=None):
+    """Search MAST TESScut by sky position for target pixel data."""
     if ra is None or dec is None:
         return None
 
@@ -74,6 +100,7 @@ def search_tesscut_pixel_data(sector=None, ra=None, dec=None):
 
 
 def search_spoc_tpf_data(ticid, sector=None):
+    """Search MAST SPOC target pixel files by TIC ID."""
     if ticid is None:
         return None
 
@@ -90,20 +117,24 @@ def search_spoc_tpf_data(ticid, sector=None):
 
 
 def build_candidate_id(path):
+    """Build the stable Zooniverse subject UUID for a candidate path."""
     return str(uuid.uuid5(ZOONIVERSE_UUID_NAMESPACE, str(path)))
 
 
 def build_output_name(path):
+    """Return the candidate UUID and PNG filename for a candidate path."""
     candidate_id = build_candidate_id(path)
     return candidate_id, f"{candidate_id}.png"
 
 
 def build_output_relative_path(filename):
+    """Shard an exported candidate filename into a two-level relative path."""
     stem = filename.removesuffix(".png").replace("-", "")
     return Path(stem[:2]) / stem[2:4] / filename
 
 
 def render_candidate_plot(path, output_path):
+    """Render the plain normalized light-curve PNG for a candidate."""
     lc = load(path)
     time_days = numpy.asarray(lc["time"].jd, dtype=float)
     time_days = time_days - time_days[0]
@@ -151,11 +182,13 @@ def render_candidate_plot(path, output_path):
 
 
 def render_candidate_task(task):
+    """Render a plain candidate plot from a multiprocessing-style task mapping."""
     render_candidate_plot(task["path"], Path(task["output_path"]))
     return task["output_path"]
 
 
 def extract_tess_tpf_metadata(path):
+    """Extract TIC, sector, and sky-position metadata needed for TPF lookup."""
     lc = load(path)
     ticid = lc.meta.get("TICID") or lc.meta.get("TARGETID")
     sector = lc.meta.get("SECTOR")
@@ -165,6 +198,7 @@ def extract_tess_tpf_metadata(path):
 
 
 def search_for_tess_pixel_data(ticid, sector=None, ra=None, dec=None):
+    """Find TESS pixel data, preferring TESScut coordinates before SPOC TIC lookup."""
     if ra is not None and dec is not None:
         try:
             search_result = search_tesscut_pixel_data(sector=sector, ra=ra, dec=dec)
@@ -200,6 +234,11 @@ def download_tess_tpf(
     download_dir=None,
     max_attempts=4,
 ):
+    """Download or read cached TESS target pixel data for a candidate.
+
+    TESScut is tried first when coordinates are available, falling back to
+    smaller cutouts and then SPOC pixel files for edge/corruption failures.
+    """
     if ticid is None and (ra is None or dec is None):
         raise ValueError(
             "Could not determine a TIC ID or sky position for pixel download"
@@ -310,6 +349,7 @@ def download_tess_tpf(
 
 
 def nanmean_frame(frames):
+    """Average a stack of TPF frames while preserving all-NaN pixels."""
     frame_stack = numpy.stack(frames, axis=0)
     finite = numpy.isfinite(frame_stack)
     counts = finite.sum(axis=0)
@@ -330,6 +370,12 @@ def summarize_tpf_frames(
     peak_day=None,
     reference_lookback_days=TPF_REFERENCE_LOOKBACK_DAYS,
 ):
+    """Select TPF frames and a pre-event reference frame for heatmap rendering.
+
+    Frames are sampled near the start, peak, and end of the zoom window. When a
+    peak day is known, the middle heatmap is pinned to it and neighboring
+    heatmaps are sampled close to the peak rather than evenly across the span.
+    """
     flux_cube = flux_to_numpy(tpf.flux)
     if flux_cube.ndim != 3 or len(flux_cube) == 0:
         raise ValueError("Unexpected target pixel file shape")
@@ -369,25 +415,22 @@ def summarize_tpf_frames(
     )
 
     window_span_jd = window_end_jd - window_start_jd
-    sample_times_jd = window_start_jd + window_span_jd * numpy.array(
-        [0.0, 0.4, 0.5, 0.6, 1.0],
-        dtype=float,
-    )
+    sample_times_jd = window_start_jd + window_span_jd * TPF_FRAME_SAMPLE_FRACTIONS
     peak_sample_index = None
     if peak_day is not None and numpy.isfinite(peak_day):
-        peak_sample_index = 2
+        peak_sample_index = TPF_PEAK_SAMPLE_INDEX
         peak_jd = numpy.clip(time_zero_jd + peak_day, window_start_jd, window_end_jd)
         sample_times_jd = numpy.array(
             [
                 window_start_jd,
                 numpy.clip(
-                    peak_jd - window_span_jd * 0.1,
+                    peak_jd - window_span_jd * TPF_PEAK_NEARBY_SAMPLE_FRACTION,
                     window_start_jd,
                     window_end_jd,
                 ),
                 peak_jd,
                 numpy.clip(
-                    peak_jd + window_span_jd * 0.1,
+                    peak_jd + window_span_jd * TPF_PEAK_NEARBY_SAMPLE_FRACTION,
                     window_start_jd,
                     window_end_jd,
                 ),
@@ -395,7 +438,7 @@ def summarize_tpf_frames(
             ],
             dtype=float,
         )
-    frame_indices = [None] * 5
+    frame_indices = [None] * TPF_HEATMAP_COUNT
     used_frame_indices = set()
     for sample_position, sample_time_jd in enumerate(sample_times_jd):
         nearest = int(
@@ -447,13 +490,18 @@ def add_tpf_samples_subplot(
     x_right,
     lightcurve_median_flux,
 ):
+    """Draw fixed-size TPF difference heatmaps above the zoomed light curve.
+
+    Each heatmap is normalized by the candidate median flux and positioned along
+    the x-axis by frame time, while its rendered size remains constant.
+    """
     if not numpy.isfinite(lightcurve_median_flux) or lightcurve_median_flux == 0:
         raise ValueError("Light-curve median flux must be finite and non-zero")
 
     rendered_frames = []
     difference_values = []
 
-    for _, relative_day, frame in frames[:5]:
+    for _, relative_day, frame in frames[:TPF_HEATMAP_COUNT]:
         frame_array = numpy.array(frame, dtype=float, copy=True)
         difference_frame = (frame_array - reference_frame) / lightcurve_median_flux
         rendered_frames.append((relative_day, difference_frame))
@@ -465,12 +513,15 @@ def add_tpf_samples_subplot(
         raise ValueError("No finite target pixel values available")
 
     valid_difference_values = numpy.concatenate(difference_values)
-    abs_limit = numpy.nanpercentile(numpy.abs(valid_difference_values), 90)
+    abs_limit = numpy.nanpercentile(
+        numpy.abs(valid_difference_values),
+        TPF_DIFF_LIMIT_PERCENTILE,
+    )
     if not numpy.isfinite(abs_limit) or abs_limit == 0:
         abs_limit = numpy.nanmax(numpy.abs(valid_difference_values))
     if not numpy.isfinite(abs_limit) or abs_limit == 0:
         abs_limit = 1.0
-    abs_limit = max(abs_limit, 0.005)
+    abs_limit = max(abs_limit, TPF_MIN_ABS_DIFF_LIMIT)
     diff_vmin = -abs_limit
     diff_vmax = abs_limit
     norm = Normalize(vmin=diff_vmin, vmax=diff_vmax)
@@ -484,9 +535,9 @@ def add_tpf_samples_subplot(
         ax.spines[spine].set_visible(False)
     ax.spines["bottom"].set_color("#9aa8b6")
 
-    sample_width = 0.144
-    sample_height = 0.94
-    sample_bottom = 0.06
+    sample_width = TPF_HEATMAP_WIDTH
+    sample_height = TPF_HEATMAP_HEIGHT
+    sample_bottom = TPF_HEATMAP_BOTTOM
 
     slot_centers = numpy.linspace(x_left, x_right, len(rendered_frames))
     for slot_center, (relative_day, rendered_frame) in zip(
@@ -533,7 +584,12 @@ def add_tpf_samples_subplot(
             zorder=1,
         )
 
-    tick_values = sorted({round(relative_day, 3) for _, relative_day, _ in frames[:5]})
+    tick_values = sorted(
+        {
+            round(relative_day, 3)
+            for _, relative_day, _ in frames[:TPF_HEATMAP_COUNT]
+        }
+    )
     ax.set_xticks(tick_values)
     ax.set_xlabel("Time (days)", color="#23313d", labelpad=6)
     ax.xaxis.set_major_formatter(FormatStrFormatter("%.1f"))
@@ -567,6 +623,7 @@ def add_tpf_samples_subplot(
 
 
 def plot_full_lightcurve_overview(ax, time_days, brightness, x_left, x_right):
+    """Draw the full light curve with the selected zoom window highlighted."""
     finite = numpy.isfinite(time_days) & numpy.isfinite(brightness)
     if not finite.any():
         return
@@ -620,6 +677,7 @@ def plot_full_lightcurve_overview(ax, time_days, brightness, x_left, x_right):
 
 
 def smooth_series(values, window=11):
+    """Smooth a one-dimensional series with an odd-width moving average."""
     if len(values) == 0:
         return values
     window = max(3, min(int(window), len(values)))
@@ -633,15 +691,28 @@ def smooth_series(values, window=11):
 
 
 def choose_peak_window(time_days, brightness):
-    median_level = 1.0
-    smoothing_window = min(21, max(5, len(brightness) // 40))
+    """Choose a zoom window around the strongest positive flux increase.
+
+    The peak itself is selected only from positive deviations above baseline, so
+    transits and eclipses cannot be chosen as the central event. Once the peak
+    is chosen, the window expands across nearby significant excursions on either
+    side, including below-baseline dips that are part of the same event.
+    """
+    median_level = PEAK_BASELINE_FLUX
+    smoothing_window = min(
+        PEAK_SMOOTH_MAX_WINDOW,
+        max(PEAK_SMOOTH_MIN_WINDOW, len(brightness) // PEAK_SMOOTH_POINT_FRACTION),
+    )
     smoothed = smooth_series(brightness, window=smoothing_window)
     deviation = numpy.abs(smoothed - median_level)
     positive_deviation = smoothed - median_level
     peak_index = int(numpy.nanargmax(positive_deviation))
     peak_deviation = positive_deviation[peak_index]
     total_span = max(time_days[-1] - time_days[0], 0.0)
-    minimum_half_width = max(total_span * 0.0075, 0.075)
+    minimum_half_width = max(
+        total_span * PEAK_MIN_HALF_WIDTH_FRACTION,
+        PEAK_MIN_HALF_WIDTH_DAYS,
+    )
 
     if not numpy.isfinite(peak_deviation) or peak_deviation <= 0:
         return time_days[0], time_days[-1], time_days[peak_index]
@@ -650,10 +721,16 @@ def choose_peak_window(time_days, brightness):
     if not numpy.isfinite(local_scatter) or local_scatter == 0:
         local_scatter = numpy.nanmedian(numpy.abs(brightness - median_level))
     if not numpy.isfinite(local_scatter) or local_scatter == 0:
-        local_scatter = 0.01
-    return_tolerance = max(local_scatter * 2.5, 0.01)
+        local_scatter = PEAK_MIN_RETURN_TOLERANCE
+    return_tolerance = max(
+        local_scatter * PEAK_LOCAL_SCATTER_MULTIPLIER,
+        PEAK_MIN_RETURN_TOLERANCE,
+    )
     if numpy.isfinite(peak_deviation) and peak_deviation > 0:
-        return_tolerance = min(return_tolerance, peak_deviation * 0.5)
+        return_tolerance = min(
+            return_tolerance,
+            peak_deviation * PEAK_RETURN_TOLERANCE_FRACTION,
+        )
 
     baseline_hold_days = minimum_half_width
 
@@ -686,7 +763,7 @@ def choose_peak_window(time_days, brightness):
     right_span = time_days[right_boundary] - time_days[peak_index]
 
     half_width = max(left_span, right_span)
-    half_width = max(half_width * 1.15, minimum_half_width)
+    half_width = max(half_width * PEAK_WINDOW_PADDING_FACTOR, minimum_half_width)
 
     center = time_days[peak_index]
     left_limit = max(time_days[0], center - half_width)
@@ -705,6 +782,7 @@ def choose_peak_window(time_days, brightness):
 
 
 def plot_candidate_plot_with_tpf(path, tpf_download_dir=DEFAULT_TPF_DOWNLOAD_DIR):
+    """Build the combined TPF, zoomed light-curve, and overview figure."""
     lc = load(path)
     absolute_time_days = numpy.asarray(lc["time"].jd, dtype=float)
     time_zero_jd = absolute_time_days[0]
@@ -802,6 +880,7 @@ def plot_candidate_plot_with_tpf(path, tpf_download_dir=DEFAULT_TPF_DOWNLOAD_DIR
 def render_candidate_plot_with_tpf(
     path, output_path, tpf_download_dir=DEFAULT_TPF_DOWNLOAD_DIR
 ):
+    """Render the combined candidate/TPF figure to disk."""
     fig = plot_candidate_plot_with_tpf(path, tpf_download_dir)
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -810,6 +889,7 @@ def render_candidate_plot_with_tpf(
 
 
 def render_candidate_tpf_task(task):
+    """Render a combined candidate/TPF plot from a task mapping."""
     render_candidate_plot_with_tpf(
         task["path"],
         Path(task["output_path"]),
