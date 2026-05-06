@@ -6,9 +6,7 @@ from tqdm.auto import tqdm
 
 from .public_candidate_exports import build_candidate_id
 
-DEFAULT_SUBJECT_METADATA_CACHE_PATH = Path(
-    "data/zooniverse/subject_metadata_cache.csv"
-)
+DEFAULT_SUBJECT_METADATA_CACHE_PATH = Path("data/zooniverse/subject_metadata_cache.csv")
 DEFAULT_TASK_KEY = "T0"
 REQUIRED_ZOONIVERSE_COLUMNS = {
     "subject_id",
@@ -93,8 +91,7 @@ def load_workflow_answer_labels(workflow_id, task_key=DEFAULT_TASK_KEY):
         raise KeyError(f"Workflow {workflow_id} task {task_key!r} has no answers")
 
     labels = {
-        index: extract_answer_label(answer)
-        for index, answer in enumerate(answers)
+        index: extract_answer_label(answer) for index, answer in enumerate(answers)
     }
     if not labels:
         raise ValueError(
@@ -138,9 +135,7 @@ def load_subject_candidate_ids(
     cache = load_subject_metadata_cache(cache_path)
     cached = dict(cache[["subject_id", "candidate_id"]].values)
     missing_subject_ids = [
-        subject_id
-        for subject_id in subject_ids
-        if subject_id not in cached
+        subject_id for subject_id in subject_ids if subject_id not in cached
     ]
 
     new_rows = []
@@ -206,9 +201,7 @@ def annotate_most_likely_answers(
     answer_labels = load_workflow_answer_labels(workflow_id, task_key=task_key)
 
     zooniverse = zooniverse.copy()
-    zooniverse["most_likely_answer"] = zooniverse["data.most_likely"].map(
-        answer_labels
-    )
+    zooniverse["most_likely_answer"] = zooniverse["data.most_likely"].map(answer_labels)
     print(f"Workflow {workflow_id} {task_key} answers: {answer_labels}")
     return zooniverse, workflow_id, answer_labels
 
@@ -217,14 +210,17 @@ def select_zooniverse_answer_results(
     model_results,
     zooniverse,
     answer,
+    min_classifications,
+    min_agreement,
     subject_metadata_cache_path=DEFAULT_SUBJECT_METADATA_CACHE_PATH,
 ):
     model_results = add_candidate_ids(model_results)
     candidate_path_map = dict(model_results[["candidate_id", "path"]].values)
 
     selected = zooniverse[
-        zooniverse["most_likely_answer"].str.casefold()
-        == str(answer).casefold()
+        (zooniverse["most_likely_answer"].str.casefold() == str(answer).casefold())
+        & (zooniverse["data.num_votes"] >= min_classifications)
+        & (zooniverse["data.agreement"] >= min_agreement)
     ].copy()
 
     subject_candidate_map = load_subject_candidate_ids(
