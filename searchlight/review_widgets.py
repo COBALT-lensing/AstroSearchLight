@@ -15,7 +15,7 @@ from .models.simulens.v1 import (
 from searchlight.public_candidate_exports import plot_candidate_plot_with_tpf
 
 
-def make_zooniverse_review_item(row, lc):
+def make_zooniverse_review_item(row, lc, zoom_window_days=None, zoom_window_jd=None):
     path = row["path"]
     score = row.get("lensing")
     subject_id = row.get("subject_id")
@@ -38,10 +38,26 @@ def make_zooniverse_review_item(row, lc):
     ra = lc.meta.get("RA")
     dec = lc.meta.get("DEC")
 
+    tpf_fig = plot_candidate_plot_with_tpf(
+        path,
+        zoom_window_days=zoom_window_days,
+        zoom_window_jd=zoom_window_jd,
+    )
+    zoom_window = getattr(tpf_fig, "searchlight_zoom_window", None)
+
     lines = [
         f"<div><strong>File:</strong> <code>{path}</code></div>",
         f"<div><strong>Subject ID:</strong> <code>{subject_id}</code></div>",
     ]
+    if zoom_window is not None:
+        lines.append(
+            "<div><strong>Zoom window:</strong> "
+            f"<code>{zoom_window['start_jd']:.6f}</code> to "
+            f"<code>{zoom_window['end_jd']:.6f}</code> JD "
+            f"(<code>{zoom_window['start_day']:.6f}</code> to "
+            f"<code>{zoom_window['end_day']:.6f}</code> days, "
+            f"{zoom_window['source']})</div>"
+        )
     if pandas.notna(most_likely_answer):
         lines.append(
             f"<div><strong>Most likely answer:</strong> {most_likely_answer}</div>"
@@ -66,7 +82,6 @@ def make_zooniverse_review_item(row, lc):
         )
     details = widgets.HTML("".join(lines))
 
-    tpf_fig = plot_candidate_plot_with_tpf(path)
     tpf_buffer = BytesIO()
     tpf_fig.savefig(tpf_buffer, format="png", bbox_inches="tight")
     pyplot.close(tpf_fig)

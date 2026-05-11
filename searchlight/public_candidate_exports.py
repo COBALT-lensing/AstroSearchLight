@@ -781,7 +781,56 @@ def choose_peak_window(time_days, brightness):
     return left_limit, right_limit, center
 
 
-def plot_candidate_plot_with_tpf(path, tpf_download_dir=DEFAULT_TPF_DOWNLOAD_DIR):
+def resolve_zoom_window(
+    time_days,
+    brightness,
+    time_zero_jd,
+    zoom_window_days=None,
+    zoom_window_jd=None,
+):
+    """Resolve an automatic or manually supplied zoom window."""
+    if zoom_window_days is not None and zoom_window_jd is not None:
+        raise ValueError("Pass only one of zoom_window_days or zoom_window_jd")
+
+    if zoom_window_jd is not None:
+        if len(zoom_window_jd) != 2:
+            raise ValueError("zoom_window_jd must be a (start, end) pair")
+        start_jd, end_jd = (float(value) for value in zoom_window_jd)
+        x_left = start_jd - time_zero_jd
+        x_right = end_jd - time_zero_jd
+        peak_day = None
+        source = "manual_jd"
+    elif zoom_window_days is not None:
+        if len(zoom_window_days) != 2:
+            raise ValueError("zoom_window_days must be a (start, end) pair")
+        x_left, x_right = (float(value) for value in zoom_window_days)
+        peak_day = None
+        source = "manual_days"
+    else:
+        x_left, x_right, peak_day = choose_peak_window(time_days, brightness)
+        source = "auto"
+
+    if not numpy.isfinite(x_left) or not numpy.isfinite(x_right):
+        raise ValueError("Zoom window bounds must be finite")
+    if x_left >= x_right:
+        raise ValueError("Zoom window start must be earlier than end")
+
+    return {
+        "start_day": x_left,
+        "end_day": x_right,
+        "start_jd": time_zero_jd + x_left,
+        "end_jd": time_zero_jd + x_right,
+        "peak_day": peak_day,
+        "source": source,
+    }
+
+
+def plot_candidate_plot_with_tpf(
+    path,
+    tpf_download_dir=DEFAULT_TPF_DOWNLOAD_DIR,
+    zoom_window_days=None,
+    zoom_window_jd=None,
+):
     """Build the combined TPF, zoomed light-curve, and overview figure."""
     lc = load(path)
     absolute_time_days = numpy.asarray(lc["time"].jd, dtype=float)
@@ -800,7 +849,16 @@ def plot_candidate_plot_with_tpf(path, tpf_download_dir=DEFAULT_TPF_DOWNLOAD_DIR
     if numpy.isfinite(median_brightness) and median_brightness != 0:
         brightness = brightness / median_brightness
 
-    x_left, x_right, peak_day = choose_peak_window(time_days, brightness)
+    zoom_window = resolve_zoom_window(
+        time_days,
+        brightness,
+        time_zero_jd,
+        zoom_window_days=zoom_window_days,
+        zoom_window_jd=zoom_window_jd,
+    )
+    x_left = zoom_window["start_day"]
+    x_right = zoom_window["end_day"]
+    peak_day = zoom_window["peak_day"]
 
     fig, (ax_tpf, ax, ax_overview) = pyplot.subplots(
         3,
@@ -874,14 +932,24 @@ def plot_candidate_plot_with_tpf(path, tpf_download_dir=DEFAULT_TPF_DOWNLOAD_DIR
         x_right=x_right,
         lightcurve_median_flux=median_brightness,
     )
+    fig.searchlight_zoom_window = zoom_window
     return fig
 
 
 def render_candidate_plot_with_tpf(
-    path, output_path, tpf_download_dir=DEFAULT_TPF_DOWNLOAD_DIR
+    path,
+    output_path,
+    tpf_download_dir=DEFAULT_TPF_DOWNLOAD_DIR,
+    zoom_window_days=None,
+    zoom_window_jd=None,
 ):
     """Render the combined candidate/TPF figure to disk."""
-    fig = plot_candidate_plot_with_tpf(path, tpf_download_dir)
+    fig = plot_candidate_plot_with_tpf(
+        path,
+        tpf_download_dir=tpf_download_dir,
+        zoom_window_days=zoom_window_days,
+        zoom_window_jd=zoom_window_jd,
+    )
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(output_path, dpi=180, bbox_inches="tight")
