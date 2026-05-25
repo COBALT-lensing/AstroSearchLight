@@ -8,6 +8,8 @@ from .public_candidate_exports import build_candidate_id
 
 DEFAULT_SUBJECT_METADATA_CACHE_PATH = Path("data/zooniverse/subject_metadata_cache.csv")
 DEFAULT_TASK_KEY = "T0"
+DEFAULT_MIN_CLASSIFICATIONS = 3
+DEFAULT_MIN_AGREEMENT = 0.7
 REQUIRED_ZOONIVERSE_COLUMNS = {
     "subject_id",
     "data.most_likely",
@@ -32,7 +34,10 @@ def normalize_subject_id(value):
     try:
         return str(int(text))
     except ValueError:
-        return str(int(float(text)))
+        try:
+            return str(int(float(text)))
+        except ValueError:
+            return None
 
 
 def normalize_answer_index(value):
@@ -252,23 +257,59 @@ def select_zooniverse_answer_results(
 
 def select_zooniverse_subject_results(
     model_results,
-    subject_ids,
+    subject_ids=None,
     subject_metadata_cache_path=DEFAULT_SUBJECT_METADATA_CACHE_PATH,
+    candidate_ids=None,
 ):
     model_results = add_candidate_ids(model_results)
     candidate_path_map = dict(model_results[["candidate_id", "path"]].values)
 
-    if isinstance(subject_ids, (str, int, float)):
+    if subject_ids is None:
+        subject_ids = []
+    elif isinstance(subject_ids, (str, int, float)):
         subject_ids = [subject_ids]
 
+    if candidate_ids is None:
+        candidate_ids = []
+    elif isinstance(candidate_ids, str):
+        candidate_ids = [candidate_ids]
+
     rows = []
-    seen_subject_ids = set()
-    for index, subject_id in enumerate(subject_ids):
-        normalized_subject_id = normalize_subject_id(subject_id)
-        if normalized_subject_id is None or normalized_subject_id in seen_subject_ids:
+    seen_subject_candidates = set()
+    for index, identifier in enumerate(subject_ids):
+        normalized_subject_id = normalize_subject_id(identifier)
+        normalized_candidate_id = None
+        if normalized_subject_id is None:
+            normalized_candidate_id = normalize_identifier(identifier)
+        if normalized_subject_id is None and normalized_candidate_id is None:
             continue
-        seen_subject_ids.add(normalized_subject_id)
-        rows.append({"subject_order": index, "subject_id": normalized_subject_id})
+        subject_candidate_key = (normalized_subject_id, normalized_candidate_id)
+        if subject_candidate_key in seen_subject_candidates:
+            continue
+        seen_subject_candidates.add(subject_candidate_key)
+        rows.append(
+            {
+                "subject_order": index,
+                "subject_id": normalized_subject_id,
+                "candidate_id": normalized_candidate_id,
+            }
+        )
+
+    for index, candidate_id in enumerate(candidate_ids, start=len(subject_ids)):
+        normalized_candidate_id = normalize_identifier(candidate_id)
+        if normalized_candidate_id is None:
+            continue
+        subject_candidate_key = (None, normalized_candidate_id)
+        if subject_candidate_key in seen_subject_candidates:
+            continue
+        seen_subject_candidates.add(subject_candidate_key)
+        rows.append(
+            {
+                "subject_order": index,
+                "subject_id": None,
+                "candidate_id": normalized_candidate_id,
+            }
+        )
 
     selected = pandas.DataFrame(rows)
     if selected.empty:
@@ -285,21 +326,40 @@ def select_zooniverse_subject_results(
             ]
         )
 
-    subject_candidate_map = load_subject_candidate_ids(
-        selected["subject_id"],
-        cache_path=subject_metadata_cache_path,
+    missing_candidate_ids = selected["candidate_id"].isna() & selected[
+        "subject_id"
+    ].notna()
+    if missing_candidate_ids.any():
+        subject_candidate_map = load_subject_candidate_ids(
+            selected.loc[missing_candidate_ids, "subject_id"],
+            cache_path=subject_metadata_cache_path,
+        )
+        selected.loc[missing_candidate_ids, "candidate_id"] = selected.loc[
+            missing_candidate_ids,
+            "subject_id",
+        ].map(subject_candidate_map)
+
+    has_candidate_id = selected["candidate_id"].notna()
+    selected = pandas.concat(
+        [
+            selected[has_candidate_id].drop_duplicates(
+                subset="candidate_id",
+                keep="first",
+            ),
+            selected[~has_candidate_id],
+        ],
+        ignore_index=True,
     )
-    selected["candidate_id"] = selected["subject_id"].map(subject_candidate_map)
     selected["path"] = selected["candidate_id"].map(candidate_path_map)
     selected["data.num_votes"] = pandas.NA
     selected["data.agreement"] = pandas.NA
     selected["most_likely_answer"] = pandas.NA
 
     missing_paths = selected["path"].isna()
-    print(f"Mapped {len(selected) - missing_paths.sum()} subjects to local paths")
+    print(f"Mapped {len(selected) - missing_paths.sum()} review IDs to local paths")
     if missing_paths.any():
         print(
-            f"Could not map {missing_paths.sum()} subject candidate_ids "
+            f"Could not map {missing_paths.sum()} review candidate_ids "
             "to local result paths"
         )
 
@@ -320,6 +380,8 @@ def load_answer_results_from_csv(
     answer,
     workflow_id=None,
     task_key=DEFAULT_TASK_KEY,
+    min_classifications=DEFAULT_MIN_CLASSIFICATIONS,
+    min_agreement=DEFAULT_MIN_AGREEMENT,
     subject_metadata_cache_path=DEFAULT_SUBJECT_METADATA_CACHE_PATH,
 ):
     zooniverse = load_zooniverse_results(zooniverse_results_csv)
@@ -332,6 +394,8 @@ def load_answer_results_from_csv(
         model_results,
         zooniverse,
         answer,
+        min_classifications,
+        min_agreement,
         subject_metadata_cache_path=subject_metadata_cache_path,
     )
     return selected, workflow_id, answer_labels
