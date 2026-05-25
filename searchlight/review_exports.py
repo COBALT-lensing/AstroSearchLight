@@ -14,6 +14,7 @@ DEFAULT_RESULT_CACHE_META_PATH = (
 )
 DEFAULT_METADATA_CACHE_PATH = DEFAULT_RESULTS_PATH / "top_resnet_metadata_cache.pkl"
 DEFAULT_SUPPRESSION_PATH = DEFAULT_RESULTS_PATH / "top_resnet_suppressions.txt"
+METADATA_COLUMNS = ["path", "tic", "sector", "simbad_url"]
 
 RESULT_COLUMNS = ["path", "label", "lensing"]
 RESULT_DTYPES = {
@@ -89,9 +90,34 @@ def load_lensing_results(
 
 
 def load_metadata_cache(cache_path=DEFAULT_METADATA_CACHE_PATH):
-    if cache_path.exists():
+    cache_path = Path(cache_path)
+    if not cache_path.exists():
+        return pandas.DataFrame(columns=METADATA_COLUMNS)
+
+    try:
         return pandas.read_pickle(cache_path)
-    return pandas.DataFrame(columns=["path", "tic", "sector", "simbad_url"])
+    except Exception as exc:
+        backup_path = backup_unreadable_cache(cache_path)
+        print(
+            f"Ignoring unreadable metadata cache {cache_path}: {exc!r}. "
+            f"Moved it to {backup_path}."
+        )
+        return pandas.DataFrame(columns=METADATA_COLUMNS)
+
+
+def backup_unreadable_cache(cache_path):
+    backup_path = cache_path.with_name(
+        f"{cache_path.stem}.unreadable{cache_path.suffix}"
+    )
+    index = 1
+    while backup_path.exists():
+        backup_path = cache_path.with_name(
+            f"{cache_path.stem}.unreadable-{index}{cache_path.suffix}"
+        )
+        index += 1
+
+    cache_path.rename(backup_path)
+    return backup_path
 
 
 def extract_path_metadata(path):
@@ -133,7 +159,7 @@ def enrich_results_with_metadata(results, cache_path=DEFAULT_METADATA_CACHE_PATH
         print(f"Updated metadata cache: {cache_path}")
 
     return results.merge(
-        metadata_cache[["path", "tic", "sector", "simbad_url"]],
+        metadata_cache[METADATA_COLUMNS],
         on="path",
         how="left",
     )
