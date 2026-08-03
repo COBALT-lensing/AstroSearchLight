@@ -2,6 +2,12 @@
 
 Vision-based light curve classification.
 
+## Matched-filter searches
+
+The `searchlight.matched_filtering` module searches light curves with a bank of
+sampled templates, returning candidate windows with matched-filter scores and
+peak prominences.
+
 ## Models
 
 ### SimuLens
