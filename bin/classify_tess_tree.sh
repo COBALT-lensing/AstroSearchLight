@@ -9,4 +9,4 @@ SPOC_URL="https://archive.stsci.edu/hlsps/tess-spoc/download_scripts/hlsp_tess-s
 
 FITS_URLS=$(curl "$SPOC_URL" | awk '{print$8}' | sed "s/'//g")
 
-echo "$FITS_URLS" | poetry run python "$ROOT_DIR/bin/classify.py" -o "$ROOT_DIR/data/tess_spoc_${SECTOR}_xgboost.csv" xgboost -
+echo "$FITS_URLS" | uv run python "$ROOT_DIR/bin/classify.py" -o "$ROOT_DIR/data/tess_spoc_${SECTOR}_xgboost.csv" xgboost -
