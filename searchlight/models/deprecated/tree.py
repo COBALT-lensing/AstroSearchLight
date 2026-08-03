@@ -1,10 +1,29 @@
 import json
 from pathlib import Path
 
-from sklearn.model_selection import train_test_split
-from xgboost import XGBClassifier
-
 from ...filter import FeatureFilter
+
+XGBClassifier = None
+train_test_split = None
+
+
+def _require_xgboost_dependencies():
+    global XGBClassifier, train_test_split
+    if XGBClassifier is not None and train_test_split is not None:
+        return XGBClassifier, train_test_split
+
+    try:
+        from sklearn.model_selection import train_test_split as imported_split
+        from xgboost import XGBClassifier as imported_classifier
+    except ImportError as exc:
+        raise ImportError(
+            "XGBFilter requires the optional deprecated dependencies. "
+            "Install them with `uv sync --extra deprecated --all-groups`."
+        ) from exc
+
+    XGBClassifier = imported_classifier
+    train_test_split = imported_split
+    return XGBClassifier, train_test_split
 
 
 class XGBFilter(FeatureFilter):
@@ -19,8 +38,9 @@ class XGBFilter(FeatureFilter):
         objective="binary:logistic",
     ):
         super().__init__()
+        classifier, _ = _require_xgboost_dependencies()
 
-        self.model = XGBClassifier(
+        self.model = classifier(
             n_estimators=n_estimators,
             max_depth=max_depth,
             learning_rate=learning_rate,
@@ -31,10 +51,11 @@ class XGBFilter(FeatureFilter):
             self.model.load_model(self.MODEL_PATH)
 
     def train(self, path):
+        _, split = _require_xgboost_dependencies()
         xs, ys, paths = self._load_datasets(path)
 
         self.train_dataset, self.test_dataset, self.train_labels, self.test_labels = (
-            train_test_split(xs, ys, test_size=0.2)
+            split(xs, ys, test_size=0.2)
         )
         self.model.fit(self.train_dataset, self.train_labels)
 

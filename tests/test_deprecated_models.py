@@ -1,5 +1,8 @@
+import builtins
+
 import numpy as np
 import pandas as pd
+import pytest
 
 from searchlight.models.deprecated import tree, upsilon
 
@@ -54,6 +57,24 @@ def test_xgb_filter_constructs_loads_trains_and_predicts(monkeypatch, tmp_path):
     assert filt.classes == ["a", "b"]
 
 
+def test_xgb_filter_explains_missing_optional_dependency(monkeypatch, tmp_path):
+    monkeypatch.setattr(tree.XGBFilter, "MODEL_SAVE_PATH", tmp_path)
+    monkeypatch.setattr(tree.XGBFilter, "MODEL_PATH", tmp_path / "model.ubj")
+    monkeypatch.setattr(tree, "XGBClassifier", None)
+    monkeypatch.setattr(tree, "train_test_split", None)
+    original_import = builtins.__import__
+
+    def fake_import(name, *args, **kwargs):
+        if name.startswith("xgboost"):
+            raise ImportError("missing xgboost")
+        return original_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", fake_import)
+
+    with pytest.raises(ImportError, match="optional deprecated dependencies"):
+        tree.XGBFilter()
+
+
 def test_upsilon_filter_constructs_trains_and_predicts(monkeypatch, tmp_path):
     calls = []
 
@@ -88,3 +109,19 @@ def test_upsilon_filter_constructs_trains_and_predicts(monkeypatch, tmp_path):
     assert ("load", tmp_path) in calls
     assert ("predict", "dataset") in calls
     assert filt.classes == ["class"]
+
+
+def test_upsilon_filter_explains_missing_optional_dependency(monkeypatch, tmp_path):
+    monkeypatch.setattr(upsilon.UpsilonFilter, "MODEL_SAVE_PATH", tmp_path)
+    monkeypatch.setattr(upsilon, "UPSILoNT", None)
+    original_import = builtins.__import__
+
+    def fake_import(name, *args, **kwargs):
+        if name.startswith("upsilont"):
+            raise ImportError("missing upsilont")
+        return original_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", fake_import)
+
+    with pytest.raises(ImportError, match="optional deprecated dependencies"):
+        upsilon.UpsilonFilter()

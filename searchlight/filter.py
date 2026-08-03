@@ -5,14 +5,33 @@ import pandas
 from tqdm.contrib.concurrent import process_map
 
 from .lightcurves import load
-from upsilont.features import VariabilityFeatures
 from .utils import cache
+
+VariabilityFeatures = None
+
+
+def _require_variability_features():
+    global VariabilityFeatures
+    if VariabilityFeatures is not None:
+        return VariabilityFeatures
+
+    try:
+        from upsilont.features import VariabilityFeatures as imported
+    except ImportError as exc:
+        raise ImportError(
+            "Feature extraction requires the optional deprecated dependencies. "
+            "Install them with `uv sync --extra deprecated --all-groups`."
+        ) from exc
+
+    VariabilityFeatures = imported
+    return VariabilityFeatures
 
 
 @cache
 def features(p):
     ts = load(p)
-    return VariabilityFeatures(ts.time.jd, ts["flux"], n_threads=1).get_features()
+    variability_features = _require_variability_features()
+    return variability_features(ts.time.jd, ts["flux"], n_threads=1).get_features()
 
 
 class FeatureFilter(object):

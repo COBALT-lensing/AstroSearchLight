@@ -1,4 +1,5 @@
 import json
+import builtins
 from pathlib import Path
 
 import numpy as np
@@ -103,6 +104,28 @@ def test_features_builds_upsilon_feature_dict(monkeypatch):
 
     assert feature_filter.features.__wrapped__("path.fits") == {"amplitude": 0.5}
     assert captured == {"time": [1, 2], "flux": [3, 4], "n_threads": 1}
+
+
+def test_features_explains_missing_optional_dependency(monkeypatch):
+    class FakeLightCurve:
+        time = type("Time", (), {"jd": [1, 2]})()
+
+        def __getitem__(self, key):
+            return [3, 4]
+
+    monkeypatch.setattr(feature_filter, "load", lambda path: FakeLightCurve())
+    monkeypatch.setattr(feature_filter, "VariabilityFeatures", None)
+    original_import = builtins.__import__
+
+    def fake_import(name, *args, **kwargs):
+        if name.startswith("upsilont"):
+            raise ImportError("missing upsilont")
+        return original_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", fake_import)
+
+    with pytest.raises(ImportError, match="optional deprecated dependencies"):
+        feature_filter.features.__wrapped__("path.fits")
 
 
 def test_feature_filter_load_datasets_and_classify_folder(monkeypatch, tmp_path):
