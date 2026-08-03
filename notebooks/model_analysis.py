@@ -6,10 +6,10 @@ import seaborn
 
 from matplotlib import pyplot
 
-from cnn import ResNetFilter
-# from tree import XGBFilter
-# from upsilon import UpsilonFilter
-from lightcurves import LC_VALIDATION_PATH
+from searchlight.models.simulens import SimuLens
+# from searchlight.models.deprecated.tree import XGBFilter
+# from searchlight.models.deprecated.upsilon import UpsilonFilter
+from searchlight.lightcurves import LC_VALIDATION_PATH
 
 # %%
 LABELS = sorted(
@@ -56,8 +56,7 @@ def plot_confusion(confusion_matrix, title=None, out_path=None):
 # plot_confusion(u_confusion, "UPSILON-T Confusion")
 
 # %%
-r = ResNetFilter(loader_workers=64)
+r = SimuLens(loader_workers=64)
 r_confusion = classify_validation_folders(r)
 plot_confusion(r_confusion, "ResNet Confusion", "data/confusion_resnet.png")
-
 

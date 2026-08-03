@@ -2,7 +2,7 @@ from pathlib import Path
 
 from upsilont import UPSILoNT
 
-from filter import FeatureFilter
+from ...filter import FeatureFilter
 
 
 class UpsilonFilter(FeatureFilter):

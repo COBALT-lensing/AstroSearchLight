@@ -1,13 +1,12 @@
 import argparse
 import csv
-import os
 import sys
 import warnings
 from pathlib import Path
 
-from .searchlight.models.simulens import SimuLens
-from .searchlight.models.deprecated.tree import XGBFilter
-from .searchlight.models.deprecated.upsilon import UpsilonFilter
+from searchlight.models.simulens import SimuLens
+from searchlight.models.deprecated.tree import XGBFilter
+from searchlight.models.deprecated.upsilon import UpsilonFilter
 
 # Suppress scipy.stats.shapiro UserWarning
 warnings.filterwarnings("ignore", category=UserWarning, message=".*scipy.stats.shapiro")

@@ -4,7 +4,7 @@ from pathlib import Path
 from sklearn.model_selection import train_test_split
 from xgboost import XGBClassifier
 
-from filter import FeatureFilter
+from ...filter import FeatureFilter
 
 
 class XGBFilter(FeatureFilter):
