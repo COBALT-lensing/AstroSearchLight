@@ -2,11 +2,17 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Iterable
 
 import numpy as np
 from scipy import signal
+
+DEFAULT_TEMPLATE_LIBRARY_PATH = Path("data/matched_filter_templates.npz")
+DEFAULT_PROMINENCE_SIGMA = 3.0
+DEFAULT_MIN_SCORE_SIGMA = 4.0
 
 
 @dataclass(frozen=True)
@@ -34,6 +40,80 @@ class MatchedFilterMatch:
     end_time: float
     score: float
     prominence: float
+
+
+@dataclass(frozen=True)
+class MatchedFilterTemplateLibrary:
+    """A bank of templates stored as arrays with a shared relative time grid."""
+
+    flux: np.ndarray
+    time: np.ndarray
+    parameters: np.ndarray | None = None
+    metadata: dict | None = None
+
+    def __post_init__(self):
+        flux = np.asarray(self.flux, dtype=float)
+        time = np.asarray(self.time, dtype=float)
+        if flux.ndim != 2:
+            raise ValueError("template library flux must be a two-dimensional array")
+        if time.ndim != 1:
+            raise ValueError("template library time must be a one-dimensional array")
+        if flux.shape[1] != len(time):
+            raise ValueError("template library flux rows must match the time length")
+        object.__setattr__(self, "flux", flux)
+        object.__setattr__(self, "time", time)
+
+    def __len__(self):
+        return self.flux.shape[0]
+
+    def __iter__(self):
+        for row in self.flux:
+            yield MatchedFilterTemplate(flux=row, time=self.time)
+
+
+def save_template_library(
+    path=DEFAULT_TEMPLATE_LIBRARY_PATH,
+    *,
+    flux,
+    time,
+    parameters=None,
+    metadata=None,
+):
+    """Save a template library as a single NumPy ``.npz`` file."""
+
+    library = MatchedFilterTemplateLibrary(
+        flux=flux,
+        time=time,
+        parameters=parameters,
+        metadata=metadata,
+    )
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+    arrays = {
+        "flux": library.flux,
+        "time": library.time,
+        "metadata_json": np.asarray(json.dumps(library.metadata or {})),
+    }
+    if parameters is not None:
+        arrays["parameters"] = np.asarray(parameters)
+
+    np.savez(path, **arrays)
+    return path
+
+
+def load_template_library(path=DEFAULT_TEMPLATE_LIBRARY_PATH):
+    """Load a template library saved by :func:`save_template_library`."""
+
+    with np.load(Path(path), allow_pickle=False) as data:
+        metadata_json = str(data["metadata_json"]) if "metadata_json" in data else "{}"
+        parameters = data["parameters"] if "parameters" in data else None
+        return MatchedFilterTemplateLibrary(
+            flux=data["flux"],
+            time=data["time"],
+            parameters=parameters,
+            metadata=json.loads(metadata_json),
+        )
 
 
 def _as_float_array(values, name: str) -> np.ndarray:
@@ -91,6 +171,18 @@ def _resample_template_to_cadence(
     return np.interp(resampled_time, template_time_array, template_flux)
 
 
+def _trim_template_edges_to_length(
+    template_flux: np.ndarray,
+    max_length: int,
+) -> np.ndarray:
+    if len(template_flux) <= max_length:
+        return template_flux
+
+    excess = len(template_flux) - max_length
+    start = excess // 2
+    return template_flux[start : start + max_length]
+
+
 def _robust_scatter(values: np.ndarray) -> float:
     median = np.median(values)
     mad = np.median(np.abs(values - median))
@@ -136,12 +228,13 @@ def _dedupe_overlapping_matches(
 def detect_matched_filter_peaks(
     time,
     flux,
-    templates: Iterable[MatchedFilterTemplate],
+    templates: Iterable[MatchedFilterTemplate] | None = None,
     *,
+    template_library_path=None,
     prominence: float | None = None,
-    prominence_sigma: float = 5.0,
+    prominence_sigma: float = DEFAULT_PROMINENCE_SIGMA,
     height: float | None = None,
-    min_score_sigma: float | None = 8.0,
+    min_score_sigma: float | None = DEFAULT_MIN_SCORE_SIGMA,
     distance: int | None = None,
     dedupe_overlaps: bool = True,
     max_matches: int | None = None,
@@ -159,9 +252,13 @@ def detect_matched_filter_peaks(
     time, flux : array-like
         One-dimensional light-curve time and flux arrays. ``astropy.time.Time``
         and quantity-like arrays are accepted.
-    templates : iterable
+    templates : iterable, optional
         Template objects with flux and time arrays. Each template is resampled
-        to the median cadence of the input light curve.
+        to the median cadence of the input light curve. If omitted, the default
+        template library in ``data`` is loaded. If a resampled template is
+        longer than the light curve, its edges are trimmed symmetrically.
+    template_library_path : optional
+        Path to a template library saved by :func:`save_template_library`.
     prominence : float, optional
         Direct prominence threshold for ``find_peaks``. If omitted, a robust
         per-template threshold is estimated from the matched-filter output.
@@ -182,6 +279,13 @@ def detect_matched_filter_peaks(
         If provided, return only the highest-scoring matches across all
         templates.
     """
+
+    if template_library_path is not None:
+        if templates is not None:
+            raise ValueError("Pass either templates or template_library_path, not both")
+        templates = load_template_library(template_library_path)
+    elif templates is None:
+        templates = load_template_library()
 
     time_array = _as_float_array(time, "time")
     flux_array = _as_float_array(flux, "flux")
@@ -205,11 +309,11 @@ def detect_matched_filter_peaks(
             target_cadence,
             f"templates[{template_index}]",
         )
+        raw_template_flux = _trim_template_edges_to_length(
+            raw_template_flux,
+            len(search_flux),
+        )
         template_len = len(raw_template_flux)
-        if template_len > len(search_flux):
-            raise ValueError(
-                f"templates[{template_index}] is longer than the light curve"
-            )
         template_flux = _normalise_signal(
             raw_template_flux,
             f"templates[{template_index}].flux",

@@ -1,10 +1,15 @@
 import unittest
 
 import numpy as np
+import pytest
 
 from searchlight.matched_filtering import (
+    MatchedFilterTemplateLibrary,
     MatchedFilterTemplate,
+    _trim_template_edges_to_length,
     detect_matched_filter_peaks,
+    load_template_library,
+    save_template_library,
 )
 
 
@@ -113,15 +118,17 @@ class MatchedFilteringTest(unittest.TestCase):
 
         self.assertEqual(len(matches), 2)
 
-    def test_rejects_template_longer_than_light_curve(self):
-        with self.assertRaisesRegex(ValueError, "longer than the light curve"):
-            detect_matched_filter_peaks(
-                np.arange(5.0),
-                np.ones(5),
-                [MatchedFilterTemplate(np.arange(6.0), np.arange(6.0))],
-            )
+    def test_trims_template_longer_than_light_curve(self):
+        matches = detect_matched_filter_peaks(
+            np.arange(5.0),
+            np.ones(5),
+            [MatchedFilterTemplate(np.arange(6.0), np.arange(6.0))],
+            prominence=0.1,
+        )
 
-    def test_default_score_threshold_rejects_low_absolute_score_peak(self):
+        self.assertEqual(matches, [])
+
+    def test_permissive_default_score_threshold_keeps_low_absolute_score_peak(self):
         time = np.arange(200.0)
         template_time = np.arange(-10.0, 11.0)
         template_flux = np.exp(-0.5 * (template_time / 2.0) ** 2)
@@ -133,6 +140,23 @@ class MatchedFilteringTest(unittest.TestCase):
             flux,
             [MatchedFilterTemplate(template_flux, template_time)],
             prominence=0.001,
+        )
+
+        self.assertEqual(len(matches), 1)
+
+    def test_can_request_stricter_score_threshold(self):
+        time = np.arange(200.0)
+        template_time = np.arange(-10.0, 11.0)
+        template_flux = np.exp(-0.5 * (template_time / 2.0) ** 2)
+        flux = np.ones_like(time)
+        flux[90 : 90 + len(template_flux)] += 0.01 * template_flux
+
+        matches = detect_matched_filter_peaks(
+            time,
+            flux,
+            [MatchedFilterTemplate(template_flux, template_time)],
+            prominence=0.001,
+            min_score_sigma=8.0,
         )
 
         self.assertEqual(matches, [])
@@ -153,6 +177,82 @@ class MatchedFilteringTest(unittest.TestCase):
         )
 
         self.assertEqual(len(matches), 1)
+
+
+def test_template_library_validates_shape_and_iterates_templates():
+    library = MatchedFilterTemplateLibrary(
+        flux=np.asarray([[1.0, 2.0], [3.0, 4.0]]),
+        time=np.asarray([-0.5, 0.5]),
+        parameters=np.asarray([(1.0,), (2.0,)], dtype=[("a", "f8")]),
+    )
+
+    assert len(library) == 2
+    templates = list(library)
+    assert np.array_equal(templates[0].flux, [1.0, 2.0])
+    assert np.array_equal(templates[1].time, [-0.5, 0.5])
+
+    with pytest.raises(ValueError, match="two-dimensional"):
+        MatchedFilterTemplateLibrary(flux=np.asarray([1.0, 2.0]), time=[1.0, 2.0])
+
+
+def test_trim_template_edges_to_length_keeps_center_samples():
+    assert np.array_equal(_trim_template_edges_to_length(np.arange(7), 3), [2, 3, 4])
+    assert np.array_equal(_trim_template_edges_to_length(np.arange(6), 3), [1, 2, 3])
+    assert np.array_equal(_trim_template_edges_to_length(np.arange(3), 6), [0, 1, 2])
+
+
+def test_save_and_load_template_library_round_trips_arrays(tmp_path):
+    path = tmp_path / "templates.npz"
+    parameters = np.asarray([(4.5, 10.0)], dtype=[("a", "f8"), ("Macc", "f8")])
+
+    saved_path = save_template_library(
+        path,
+        flux=np.asarray([[1.0, 1.2, 1.0]]),
+        time=np.asarray([-1.0, 0.0, 1.0]),
+        parameters=parameters,
+        metadata={"source": "test"},
+    )
+    library = load_template_library(saved_path)
+
+    assert saved_path == path
+    assert np.array_equal(library.flux, [[1.0, 1.2, 1.0]])
+    assert np.array_equal(library.time, [-1.0, 0.0, 1.0])
+    assert np.array_equal(library.parameters, parameters)
+    assert library.metadata == {"source": "test"}
+
+
+def test_detect_can_load_templates_from_library_path(tmp_path):
+    template_time = np.arange(-10.0, 11.0)
+    template_flux = np.exp(-0.5 * (template_time / 2.0) ** 2)
+    library_path = save_template_library(
+        tmp_path / "templates.npz",
+        flux=np.asarray([template_flux]),
+        time=template_time,
+    )
+    time = np.arange(100.0)
+    flux = np.ones_like(time)
+    flux[40 : 40 + len(template_flux)] += 0.2 * template_flux
+
+    matches = detect_matched_filter_peaks(
+        time,
+        flux,
+        template_library_path=library_path,
+        prominence=0.1,
+        min_score_sigma=None,
+    )
+
+    assert len(matches) == 1
+    assert matches[0].start_index == 40
+
+
+def test_detect_rejects_templates_and_library_path_together(tmp_path):
+    with pytest.raises(ValueError, match="either templates or template_library_path"):
+        detect_matched_filter_peaks(
+            np.arange(10.0),
+            np.ones(10),
+            [MatchedFilterTemplate(np.ones(3), np.arange(3.0))],
+            template_library_path=tmp_path / "templates.npz",
+        )
 
 
 if __name__ == "__main__":
