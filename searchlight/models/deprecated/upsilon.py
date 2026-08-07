@@ -1,6 +1,5 @@
-from pathlib import Path
-
 from ...filter import FeatureFilter
+from ...paths import DATA_PATH
 
 UPSILoNT = None
 
@@ -23,7 +22,7 @@ def _require_upsilont():
 
 
 class UpsilonFilter(FeatureFilter):
-    MODEL_SAVE_PATH = Path("data/upsilont/")
+    MODEL_SAVE_PATH = DATA_PATH / "upsilont"
 
     def __init__(self):
         super().__init__()

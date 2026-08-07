@@ -25,9 +25,10 @@ from searchlight.matched_filtering import (
     detect_matched_filter_peaks,
     save_template_library,
 )
+from searchlight.paths import CACHE_PATH
 
 
-DEFAULT_VALIDATION_CACHE_DIR = Path(".cache/matched_filter_validation_cache")
+DEFAULT_VALIDATION_CACHE_DIR = CACHE_PATH / "matched_filter_validation_cache"
 PARAMETER_FIELDS = [
     ("a", "f8"),
     ("i", "f8"),

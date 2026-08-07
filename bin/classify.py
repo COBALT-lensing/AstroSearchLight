@@ -66,6 +66,7 @@ if __name__ == "__main__":
         sys.exit(2)
 
     if results_path is not None:
+        results_path.parent.mkdir(parents=True, exist_ok=True)
         with open(results_path, "w") as results_f:
             results_w = csv.writer(results_f)
             results_w.writerow(["path", "label"] + classifier.classes)

@@ -18,10 +18,11 @@ from torch.utils.data import DataLoader, Dataset
 from torchvision import models
 
 from ...lightcurves import plot, load
+from ...paths import DATA_PATH
 from ...utils import cache
 
 IMAGE_DIMS = (224, 224)
-PLOT_CACHE_PATH = "data/plots"
+PLOT_CACHE_PATH = DATA_PATH / "plots"
 
 DEFAULT_SPLIT_SIZES = [numpy.inf, 7, 2]
 
@@ -397,7 +398,7 @@ class LightcurvePathsDataSet(Dataset):
 
 
 class SimuLens(object):
-    MODEL_SAVE_PATH = Path("data/models/simulens/1.0/model_weights.pth")
+    MODEL_SAVE_PATH = DATA_PATH / "models" / "simulens" / "1.0" / "model_weights.pth"
     STOPPING_PATIENCE = 5
     STOPPING_SIGMA = 5
     LOADER_BATCH_SIZE = 8

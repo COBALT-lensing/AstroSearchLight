@@ -10,7 +10,9 @@ from typing import Iterable
 import numpy as np
 from scipy import signal
 
-DEFAULT_TEMPLATE_LIBRARY_PATH = Path("data/matched_filter_templates.npz")
+from .paths import DATA_PATH
+
+DEFAULT_TEMPLATE_LIBRARY_PATH = DATA_PATH / "matched_filter_templates.npz"
 DEFAULT_PROMINENCE_SIGMA = 3.0
 DEFAULT_MIN_SCORE_SIGMA = 4.0
 DEFAULT_MATCH_WINDOW_REL_HEIGHT = 0.5
@@ -522,9 +524,10 @@ def detect_matched_filter_peaks(
     templates : iterable, optional
         Template objects with flux and time arrays. Each template is resampled
         to the median cadence of the input light curve. If omitted, the default
-        template library in ``data`` is loaded. If a resampled template is at
-        least as long as the light curve, the mean-subtracted search flux is
-        zero-padded so the full template can slide across the observation.
+        template library in ``~/.astrosearchlight`` is loaded. If a resampled
+        template is at least as long as the light curve, the mean-subtracted
+        search flux is zero-padded so the full template can slide across the
+        observation.
     template_library_path : optional
         Path to a template library saved by :func:`save_template_library`.
     prominence : float, optional

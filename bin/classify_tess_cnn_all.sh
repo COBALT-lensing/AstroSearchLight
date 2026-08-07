@@ -2,12 +2,13 @@
 
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 ROOT_DIR=$(cd -- "${SCRIPT_DIR}/.." && pwd)
+DATA_DIR="${ASTROSEARCHLIGHT_DATA_DIR:-$HOME/.astrosearchlight}"
 
 SECTORS=$(seq 1 82)
 
 for SECTOR in $SECTORS
 do
-    if [[ -f "$ROOT_DIR/data/tess_spoc_$(printf "%04d" "$SECTOR")_resnet.csv" ]]
+    if [[ -f "$DATA_DIR/tess_spoc_$(printf "%04d" "$SECTOR")_resnet.csv" ]]
     then
         echo "*** SKIPPING sector ${SECTOR} (completed)"
         continue
@@ -20,5 +21,5 @@ do
         echo "Retrying"
     done
     echo "*** FINISHED sector ${SECTOR}"
-    rm -rf "$ROOT_DIR/data/cache"/*
+    rm -rf "$DATA_DIR/cache"/*
 done

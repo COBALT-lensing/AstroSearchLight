@@ -14,8 +14,8 @@ Generate the default self-lensing template library with:
 uv run python bin/generate_matched_filter_template_library.py
 ```
 
-The generator writes `data/matched_filter_templates.npz` by default. Install its
-private self-lensing dependency with:
+The generator writes `~/.astrosearchlight/matched_filter_templates.npz` by
+default. Install its private self-lensing dependency with:
 
 ```shell
 uv sync --extra template-generation --all-groups
@@ -55,11 +55,12 @@ prints which calibration grid and threshold step it is running. Before template
 generation starts for a grid, it filters candidate systems for self-lensing and
 Roche-lobe constraints; for dense grids this can be a noticeable stage, so it
 has its own progress bar. Validation curves are cached by default in
-`.cache/matched_filter_validation_cache` and reused for later runs with the same
-validation-generation settings. The random seed is recorded in the cached
-metadata but is not part of the cache key. Validation evaluation can run through
-the original CPU detector or a batched JAX backend. The default `auto` mode uses
-JAX only when JAX reports a GPU device; otherwise it stays on the CPU path.
+`~/.astrosearchlight/cache/matched_filter_validation_cache` and reused for later
+runs with the same validation-generation settings. The random seed is recorded
+in the cached metadata but is not part of the cache key. Validation evaluation
+can run through the original CPU detector or a batched JAX backend. The default
+`auto` mode uses JAX only when JAX reports a GPU device; otherwise it stays on
+the CPU path.
 
 Useful calibration options:
 
@@ -75,7 +76,7 @@ Useful calibration options:
 - `--no-validation-cache`: disable reading and writing cached validation light
   curves.
 - `--validation-cache-dir PATH`: directory for cached validation light curves.
-  The default is `.cache/matched_filter_validation_cache`.
+  The default is `~/.astrosearchlight/cache/matched_filter_validation_cache`.
 - `--validation-backend auto|cpu|jax`: backend for validation evaluation.
   `auto` uses the JAX backend only when a GPU is visible to JAX. The JAX backend
   is optimized for calibration recall and uses a JAX-native local-peak test

@@ -7,8 +7,9 @@ from pickle import PicklingError, UnpicklingError
 
 import compress_pickle as pickle
 
+from .paths import CACHE_PATH
 
-FUNC_CACHE_PATH = "data/cache/"
+FUNC_CACHE_PATH = CACHE_PATH
 logger = logging.getLogger(__name__)
 
 

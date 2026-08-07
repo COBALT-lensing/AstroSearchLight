@@ -1,7 +1,7 @@
 import json
-from pathlib import Path
 
 from ...filter import FeatureFilter
+from ...paths import DATA_PATH
 
 XGBClassifier = None
 train_test_split = None
@@ -27,7 +27,7 @@ def _require_xgboost_dependencies():
 
 
 class XGBFilter(FeatureFilter):
-    MODEL_SAVE_PATH = Path("data/xgboost/")
+    MODEL_SAVE_PATH = DATA_PATH / "xgboost"
     MODEL_PATH = MODEL_SAVE_PATH / "model.ubj"
 
     def __init__(

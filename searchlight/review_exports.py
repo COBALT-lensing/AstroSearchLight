@@ -5,8 +5,9 @@ from urllib.parse import quote
 import pandas
 
 from .lightcurves import load
+from .paths import DATA_PATH
 
-DEFAULT_RESULTS_PATH = Path("data/results/simulens1.0_tess_spoc")
+DEFAULT_RESULTS_PATH = DATA_PATH / "results" / "simulens1.0_tess_spoc"
 DEFAULT_RESULT_GLOB = "*_resnet.csv"
 DEFAULT_RESULT_CACHE_PATH = DEFAULT_RESULTS_PATH / "top_resnet_results_cache.pkl"
 DEFAULT_RESULT_CACHE_META_PATH = (
