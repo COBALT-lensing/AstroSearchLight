@@ -94,6 +94,8 @@ class MatchedFilterTemplateLibrary:
 class _PreparedMatchedFilterTemplate:
     index: int
     flux: np.ndarray
+    polarity_weights: np.ndarray | None
+    polarity_sign: float
     length: int
     center: int
 
@@ -360,7 +362,10 @@ def _dedupe_overlapping_matches(
     current_end = sorted_matches[0].end_index
 
     for match in sorted_matches[1:]:
-        if match.start_index <= current_end:
+        if match.start_index <= current_end and any(
+            _matches_share_peak_window(existing, match)
+            for existing in current_group
+        ):
             current_group.append(match)
             current_end = max(current_end, match.end_index)
             continue
@@ -371,6 +376,16 @@ def _dedupe_overlapping_matches(
 
     deduped.append(max(current_group, key=lambda match: match.score))
     return sorted(deduped, key=lambda match: match.peak_time)
+
+
+def _matches_share_peak_window(
+    first: MatchedFilterMatch,
+    second: MatchedFilterMatch,
+) -> bool:
+    return (
+        first.start_index <= second.peak_index <= first.end_index
+        and second.start_index <= first.peak_index <= second.end_index
+    )
 
 
 def _resolve_templates(
@@ -388,6 +403,35 @@ def _resolve_templates(
         template_metadata = templates.metadata
 
     return templates, template_metadata
+
+
+def _template_polarity(
+    template_flux: np.ndarray,
+    center: int,
+) -> tuple[np.ndarray | None, float]:
+    baseline = float(np.median(template_flux))
+    center_delta = float(template_flux[center] - baseline)
+    if center_delta == 0 or not np.isfinite(center_delta):
+        return None, 0.0
+
+    polarity_sign = float(np.sign(center_delta))
+    signed_excess = polarity_sign * (template_flux - baseline)
+    positive = signed_excess > 0
+    if not positive[center]:
+        return None, polarity_sign
+
+    start = center
+    while start > 0 and positive[start - 1]:
+        start -= 1
+    end = center + 1
+    while end < len(template_flux) and positive[end]:
+        end += 1
+
+    weights = np.zeros_like(template_flux, dtype=float)
+    weights[start:end] = signed_excess[start:end]
+    if np.sum(weights) <= 0:
+        return None, polarity_sign
+    return weights, polarity_sign
 
 
 def _prepare_templates(
@@ -415,6 +459,11 @@ def _prepare_templates(
             target_cadence,
         )
         template_len = len(raw_template_flux)
+        template_center = int(np.argmin(np.abs(raw_template_time)))
+        polarity_weights, polarity_sign = _template_polarity(
+            raw_template_flux,
+            template_center,
+        )
         template_flux = _normalise_signal(
             raw_template_flux,
             f"templates[{template_index}].flux",
@@ -423,8 +472,10 @@ def _prepare_templates(
             _PreparedMatchedFilterTemplate(
                 index=template_index,
                 flux=template_flux,
+                polarity_weights=polarity_weights,
+                polarity_sign=polarity_sign,
                 length=template_len,
-                center=int(np.argmin(np.abs(raw_template_time))),
+                center=template_center,
             )
         )
     return prepared_templates
@@ -488,6 +539,23 @@ def _clip_match_window_to_observation(
 
 def _is_observed_peak(center_index: int, observation_length: int) -> bool:
     return 0 <= center_index < observation_length
+
+
+def _passes_template_polarity(
+    detection_flux: np.ndarray,
+    detection_start_index: int,
+    template: _PreparedMatchedFilterTemplate,
+) -> bool:
+    if template.polarity_weights is None:
+        return True
+
+    segment = detection_flux[
+        detection_start_index : detection_start_index + template.length
+    ]
+    polarity_score = template.polarity_sign * float(
+        np.dot(segment, template.polarity_weights)
+    )
+    return polarity_score > 0
 
 
 def detect_matched_filter_peaks(
@@ -649,6 +717,12 @@ def detect_matched_filter_peaks(
             center_index = detection_center_index - pad_samples
             if not _is_observed_peak(center_index, len(time_array)):
                 continue
+            if not _passes_template_polarity(
+                detection_flux,
+                detection_start_index,
+                template,
+            ):
+                continue
             start_index, end_index, start_time, end_time = (
                 _match_window_from_correlation_width(
                     detection_time,
@@ -796,6 +870,12 @@ def detect_matched_filter_peaks_batched(
                     detection_center_index = detection_start_index + template.center
                     center_index = detection_center_index - pad_samples
                     if not _is_observed_peak(center_index, len(time_array)):
+                        continue
+                    if not _passes_template_polarity(
+                        detection_flux[batch_curve_index],
+                        detection_start_index,
+                        template,
+                    ):
                         continue
                     start_index, end_index, start_time, end_time = (
                         _match_window_from_correlation_width(
