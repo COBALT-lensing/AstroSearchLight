@@ -16,6 +16,7 @@ DEFAULT_TEMPLATE_LIBRARY_PATH = DATA_PATH / "matched_filter_templates.npz"
 DEFAULT_PROMINENCE_SIGMA = 3.0
 DEFAULT_MIN_SCORE_SIGMA = 4.0
 DEFAULT_MATCH_WINDOW_REL_HEIGHT = 0.5
+DEFAULT_MIN_CENTER_FLUX_SIGMA = 4.0
 _UNSET = object()
 
 
@@ -310,6 +311,34 @@ def _pad_search_matrix_for_template(
     return padded_time, padded_flux, pad_samples
 
 
+def _pad_polarity_signal(
+    flux: np.ndarray,
+    pad_samples: int,
+) -> np.ndarray:
+    if pad_samples == 0:
+        return flux
+    return np.pad(
+        flux,
+        (pad_samples, pad_samples),
+        mode="constant",
+        constant_values=0.0,
+    )
+
+
+def _pad_polarity_matrix(
+    flux: np.ndarray,
+    pad_samples: int,
+) -> np.ndarray:
+    if pad_samples == 0:
+        return flux
+    return np.pad(
+        flux,
+        ((0, 0), (pad_samples, pad_samples)),
+        mode="constant",
+        constant_values=0.0,
+    )
+
+
 def _robust_scatter(values: np.ndarray) -> float:
     median = np.median(values)
     mad = np.median(np.abs(values - median))
@@ -317,6 +346,22 @@ def _robust_scatter(values: np.ndarray) -> float:
         return 1.4826 * mad
     std = np.std(values)
     return float(std) if std > 0 else 1.0
+
+
+def _robust_mad_scatter(values: np.ndarray) -> float:
+    median = np.median(values)
+    mad = np.median(np.abs(values - median))
+    return float(1.4826 * mad) if mad > 0 else 0.0
+
+
+def _minimum_center_flux(values: np.ndarray) -> float:
+    noise_floor = DEFAULT_MIN_CENTER_FLUX_SIGMA * _robust_mad_scatter(values)
+    if len(values) >= 100:
+        return noise_floor
+    max_positive_excursion = float(np.max(values))
+    if max_positive_excursion <= 0:
+        return noise_floor
+    return min(noise_floor, 0.5 * max_positive_excursion)
 
 
 def _default_prominence(values: np.ndarray, sigma: float) -> float:
@@ -362,10 +407,7 @@ def _dedupe_overlapping_matches(
     current_end = sorted_matches[0].end_index
 
     for match in sorted_matches[1:]:
-        if match.start_index <= current_end and any(
-            _matches_share_peak_window(existing, match)
-            for existing in current_group
-        ):
+        if match.start_index <= current_end:
             current_group.append(match)
             current_end = max(current_end, match.end_index)
             continue
@@ -376,16 +418,6 @@ def _dedupe_overlapping_matches(
 
     deduped.append(max(current_group, key=lambda match: match.score))
     return sorted(deduped, key=lambda match: match.peak_time)
-
-
-def _matches_share_peak_window(
-    first: MatchedFilterMatch,
-    second: MatchedFilterMatch,
-) -> bool:
-    return (
-        first.start_index <= second.peak_index <= first.end_index
-        and second.start_index <= first.peak_index <= second.end_index
-    )
 
 
 def _resolve_templates(
@@ -437,6 +469,8 @@ def _template_polarity(
 def _prepare_templates(
     templates: Iterable[MatchedFilterTemplate],
     target_cadence: float,
+    *,
+    allow_negative_peaks: bool,
 ) -> list[_PreparedMatchedFilterTemplate]:
     prepared_templates = []
     for template_index, template in enumerate(templates):
@@ -464,6 +498,10 @@ def _prepare_templates(
             raw_template_flux,
             template_center,
         )
+        if not allow_negative_peaks and (
+            polarity_sign <= 0 or polarity_weights is None
+        ):
+            continue
         template_flux = _normalise_signal(
             raw_template_flux,
             f"templates[{template_index}].flux",
@@ -542,14 +580,19 @@ def _is_observed_peak(center_index: int, observation_length: int) -> bool:
 
 
 def _passes_template_polarity(
-    detection_flux: np.ndarray,
+    polarity_flux: np.ndarray,
     detection_start_index: int,
     template: _PreparedMatchedFilterTemplate,
+    min_center_flux: float,
 ) -> bool:
     if template.polarity_weights is None:
         return True
 
-    segment = detection_flux[
+    center_flux = polarity_flux[detection_start_index + template.center]
+    if template.polarity_sign * center_flux < min_center_flux:
+        return False
+
+    segment = polarity_flux[
         detection_start_index : detection_start_index + template.length
     ]
     polarity_score = template.polarity_sign * float(
@@ -573,6 +616,7 @@ def detect_matched_filter_peaks(
     max_matches: int | None = None,
     batch_size: int | None = None,
     match_window_rel_height: float = DEFAULT_MATCH_WINDOW_REL_HEIGHT,
+    allow_negative_peaks: bool = False,
 ) -> list[MatchedFilterMatch] | list[list[MatchedFilterMatch]]:
     """Find template-like peaks in a light curve.
 
@@ -627,6 +671,11 @@ def detect_matched_filter_peaks(
         Relative height passed to ``scipy.signal.peak_widths`` for the reported
         match window. The default reports the matched-filter full width at half
         prominence around the peak.
+    allow_negative_peaks : bool
+        If false, only clearly positive-centered templates are searched and
+        candidate centers must be significant positive flux excursions. Set true
+        to also search negative-centered templates, allowing negative observed
+        peaks with matching template polarity.
     """
 
     templates, template_metadata = _resolve_templates(templates, template_library_path)
@@ -655,6 +704,7 @@ def detect_matched_filter_peaks(
             max_matches=max_matches,
             batch_size=batch_size,
             match_window_rel_height=match_window_rel_height,
+            allow_negative_peaks=allow_negative_peaks,
         )
 
     flux_array = _as_float_array(flux_array, "flux")
@@ -663,7 +713,13 @@ def detect_matched_filter_peaks(
     target_cadence = _median_cadence(time_array, "time")
 
     search_flux = flux_array - np.mean(flux_array)
-    prepared_templates = _prepare_templates(templates, target_cadence)
+    polarity_flux = flux_array - np.median(flux_array)
+    min_center_flux = _minimum_center_flux(polarity_flux)
+    prepared_templates = _prepare_templates(
+        templates,
+        target_cadence,
+        allow_negative_peaks=allow_negative_peaks,
+    )
     matches: list[MatchedFilterMatch] = []
 
     for template in prepared_templates:
@@ -673,6 +729,7 @@ def detect_matched_filter_peaks(
             template.length,
             target_cadence,
         )
+        detection_polarity_flux = _pad_polarity_signal(polarity_flux, pad_samples)
 
         matched_filter_output = signal.correlate(
             detection_flux,
@@ -718,9 +775,10 @@ def detect_matched_filter_peaks(
             if not _is_observed_peak(center_index, len(time_array)):
                 continue
             if not _passes_template_polarity(
-                detection_flux,
+                detection_polarity_flux,
                 detection_start_index,
                 template,
+                min_center_flux,
             ):
                 continue
             start_index, end_index, start_time, end_time = (
@@ -777,6 +835,7 @@ def detect_matched_filter_peaks_batched(
     max_matches: int | None = None,
     batch_size: int | None = None,
     match_window_rel_height: float = DEFAULT_MATCH_WINDOW_REL_HEIGHT,
+    allow_negative_peaks: bool = False,
 ) -> list[list[MatchedFilterMatch]]:
     """Find template-like peaks for many light curves sharing one time grid.
 
@@ -784,7 +843,8 @@ def detect_matched_filter_peaks_batched(
     a list with one ``MatchedFilterMatch`` list per input light curve. Template
     resampling and normalization are performed once, then each template is
     correlated against the flux batch. Set ``batch_size`` to limit peak memory
-    when searching very large batches.
+    when searching very large batches. If ``allow_negative_peaks`` is false,
+    only clearly positive-centered templates are searched.
     """
 
     templates, template_metadata = _resolve_templates(templates, template_library_path)
@@ -805,7 +865,17 @@ def detect_matched_filter_peaks_batched(
     target_cadence = _median_cadence(time_array, "time")
 
     search_flux = flux_matrix - np.mean(flux_matrix, axis=1, keepdims=True)
-    prepared_templates = _prepare_templates(templates, target_cadence)
+    polarity_flux = flux_matrix - np.median(flux_matrix, axis=1, keepdims=True)
+    min_center_flux = np.apply_along_axis(
+        _minimum_center_flux,
+        1,
+        polarity_flux,
+    )
+    prepared_templates = _prepare_templates(
+        templates,
+        target_cadence,
+        allow_negative_peaks=allow_negative_peaks,
+    )
     matches_by_curve: list[list[MatchedFilterMatch]] = [
         [] for _ in range(search_flux.shape[0])
     ]
@@ -822,6 +892,10 @@ def detect_matched_filter_peaks_batched(
                     template.length,
                     target_cadence,
                 )
+            )
+            detection_polarity_flux = _pad_polarity_matrix(
+                polarity_flux[batch_start:batch_end],
+                pad_samples,
             )
             matched_filter_outputs = signal.correlate(
                 detection_flux,
@@ -872,9 +946,10 @@ def detect_matched_filter_peaks_batched(
                     if not _is_observed_peak(center_index, len(time_array)):
                         continue
                     if not _passes_template_polarity(
-                        detection_flux[batch_curve_index],
+                        detection_polarity_flux[batch_curve_index],
                         detection_start_index,
                         template,
+                        min_center_flux[curve_index],
                     ):
                         continue
                     start_index, end_index, start_time, end_time = (

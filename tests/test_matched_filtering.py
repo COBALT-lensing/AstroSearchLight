@@ -141,25 +141,56 @@ class MatchedFilteringTest(unittest.TestCase):
 
         self.assertEqual([match.peak_index for match in matches], [50, 150])
 
-    def test_dedupe_keeps_distinct_neighboring_positive_peaks(self):
-        time = np.arange(120.0)
-        template_time = np.arange(-10.0, 11.0)
-        template_flux = np.exp(-0.5 * (template_time / 2.0) ** 2)
+    def test_negative_centered_templates_are_ignored(self):
+        time = np.arange(100.0)
+        template_time = np.arange(-5.0, 6.0)
+        positive_template = np.exp(-0.5 * (template_time / 1.5) ** 2)
+        negative_template = -positive_template
         flux = np.ones_like(time)
-        flux[40 : 40 + len(template_flux)] += 0.2 * template_flux
-        flux[50 : 50 + len(template_flux)] += 0.2 * template_flux
+        flux[40 : 40 + len(positive_template)] += 0.2 * positive_template
 
         matches = detect_matched_filter_peaks(
             time,
             flux,
-            [MatchedFilterTemplate(template_flux, template_time)],
-            prominence=0.01,
+            [
+                MatchedFilterTemplate(negative_template, template_time),
+                MatchedFilterTemplate(positive_template, template_time),
+            ],
+            prominence=0.1,
             min_score_sigma=None,
+            dedupe_overlaps=False,
         )
 
-        self.assertEqual(len(matches), 2)
-        self.assertLessEqual(abs(matches[0].peak_index - 50), 1)
-        self.assertLessEqual(abs(matches[1].peak_index - 60), 1)
+        self.assertEqual(len(matches), 1)
+        self.assertEqual(matches[0].template_index, 1)
+
+    def test_can_allow_negative_centered_template_matches(self):
+        time = np.arange(100.0)
+        template_time = np.arange(-5.0, 6.0)
+        positive_template = np.exp(-0.5 * (template_time / 1.5) ** 2)
+        negative_template = -positive_template
+        flux = np.ones_like(time)
+        flux[40 : 40 + len(negative_template)] += 0.2 * negative_template
+
+        default_matches = detect_matched_filter_peaks(
+            time,
+            flux,
+            [MatchedFilterTemplate(negative_template, template_time)],
+            prominence=0.1,
+            min_score_sigma=None,
+        )
+        negative_matches = detect_matched_filter_peaks(
+            time,
+            flux,
+            [MatchedFilterTemplate(negative_template, template_time)],
+            prominence=0.1,
+            min_score_sigma=None,
+            allow_negative_peaks=True,
+        )
+
+        self.assertEqual(default_matches, [])
+        self.assertEqual(len(negative_matches), 1)
+        self.assertEqual(negative_matches[0].peak_index, 45)
 
     def test_long_template_over_flat_light_curve_has_no_peaks(self):
         matches = detect_matched_filter_peaks(
