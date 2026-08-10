@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
@@ -18,6 +19,7 @@ DEFAULT_MIN_SCORE_SIGMA = 4.0
 DEFAULT_MATCH_WINDOW_REL_HEIGHT = 0.5
 DEFAULT_MIN_CENTER_FLUX_SIGMA = 4.0
 _UNSET = object()
+_CORRELATION_BACKENDS = {"auto", "cpu", "jax"}
 
 
 @dataclass(frozen=True)
@@ -601,6 +603,90 @@ def _passes_template_polarity(
     return polarity_score > 0
 
 
+def _jax_gpu_available() -> bool:
+    try:
+        os.environ.setdefault("XLA_PYTHON_CLIENT_PREALLOCATE", "false")
+        import jax
+
+        return any(device.platform == "gpu" for device in jax.devices())
+    except Exception:
+        return False
+
+
+def _resolve_backend(backend: str) -> str:
+    if backend not in _CORRELATION_BACKENDS:
+        raise ValueError("backend must be 'auto', 'cpu', or 'jax'")
+    if backend == "auto":
+        return "jax" if _jax_gpu_available() else "cpu"
+    return backend
+
+
+def _correlate_valid_1d(
+    detection_flux: np.ndarray,
+    template_flux: np.ndarray,
+    *,
+    backend: str,
+) -> np.ndarray:
+    if backend == "cpu":
+        return signal.correlate(
+            detection_flux,
+            template_flux,
+            mode="valid",
+            method="auto",
+        )
+
+    os.environ.setdefault("XLA_PYTHON_CLIENT_PREALLOCATE", "false")
+    import jax
+
+    jax.config.update("jax_enable_x64", True)
+    import jax.numpy as jnp
+    from jax import lax
+
+    lhs = jnp.asarray(detection_flux, dtype=jnp.float64)[None, :, None]
+    rhs = jnp.asarray(template_flux, dtype=jnp.float64)[:, None, None]
+    result = lax.conv_general_dilated(
+        lhs,
+        rhs,
+        window_strides=(1,),
+        padding="VALID",
+        dimension_numbers=("NWC", "WIO", "NWC"),
+    )
+    return np.asarray(jax.device_get(result[0, :, 0]), dtype=float)
+
+
+def _correlate_valid_matrix(
+    detection_flux: np.ndarray,
+    template_flux: np.ndarray,
+    *,
+    backend: str,
+) -> np.ndarray:
+    if backend == "cpu":
+        return signal.correlate(
+            detection_flux,
+            template_flux[np.newaxis, :],
+            mode="valid",
+            method="auto",
+        )
+
+    os.environ.setdefault("XLA_PYTHON_CLIENT_PREALLOCATE", "false")
+    import jax
+
+    jax.config.update("jax_enable_x64", True)
+    import jax.numpy as jnp
+    from jax import lax
+
+    lhs = jnp.asarray(detection_flux, dtype=jnp.float64)[:, :, None]
+    rhs = jnp.asarray(template_flux, dtype=jnp.float64)[:, None, None]
+    result = lax.conv_general_dilated(
+        lhs,
+        rhs,
+        window_strides=(1,),
+        padding="VALID",
+        dimension_numbers=("NWC", "WIO", "NWC"),
+    )
+    return np.asarray(jax.device_get(result[:, :, 0]), dtype=float)
+
+
 def detect_matched_filter_peaks(
     time,
     flux,
@@ -615,6 +701,7 @@ def detect_matched_filter_peaks(
     dedupe_overlaps: bool = True,
     max_matches: int | None = None,
     batch_size: int | None = None,
+    backend: str = "auto",
     match_window_rel_height: float = DEFAULT_MATCH_WINDOW_REL_HEIGHT,
     allow_negative_peaks: bool = False,
 ) -> list[MatchedFilterMatch] | list[list[MatchedFilterMatch]]:
@@ -667,6 +754,10 @@ def detect_matched_filter_peaks(
     batch_size : int, optional
         Number of light curves per correlation batch when ``flux`` is
         two-dimensional. Ignored for one-dimensional flux.
+    backend : {"auto", "cpu", "jax"}
+        Correlation backend. ``"auto"`` uses JAX when a GPU is visible to JAX
+        and otherwise uses SciPy. ``"jax"`` forces JAX for the matched-filter
+        correlations while preserving SciPy peak finding and width semantics.
     match_window_rel_height : float
         Relative height passed to ``scipy.signal.peak_widths`` for the reported
         match window. The default reports the matched-filter full width at half
@@ -687,6 +778,7 @@ def detect_matched_filter_peaks(
         prominence_sigma,
         min_score_sigma,
     )
+    resolved_backend = _resolve_backend(backend)
 
     time_array = _as_float_array(time, "time")
     flux_array = np.asarray(flux)
@@ -703,6 +795,7 @@ def detect_matched_filter_peaks(
             dedupe_overlaps=dedupe_overlaps,
             max_matches=max_matches,
             batch_size=batch_size,
+            backend=resolved_backend,
             match_window_rel_height=match_window_rel_height,
             allow_negative_peaks=allow_negative_peaks,
         )
@@ -731,11 +824,10 @@ def detect_matched_filter_peaks(
         )
         detection_polarity_flux = _pad_polarity_signal(polarity_flux, pad_samples)
 
-        matched_filter_output = signal.correlate(
+        matched_filter_output = _correlate_valid_1d(
             detection_flux,
             template.flux,
-            mode="valid",
-            method="auto",
+            backend=resolved_backend,
         )
         peak_prominence = (
             prominence
@@ -834,6 +926,7 @@ def detect_matched_filter_peaks_batched(
     dedupe_overlaps: bool = True,
     max_matches: int | None = None,
     batch_size: int | None = None,
+    backend: str = "auto",
     match_window_rel_height: float = DEFAULT_MATCH_WINDOW_REL_HEIGHT,
     allow_negative_peaks: bool = False,
 ) -> list[list[MatchedFilterMatch]]:
@@ -843,8 +936,10 @@ def detect_matched_filter_peaks_batched(
     a list with one ``MatchedFilterMatch`` list per input light curve. Template
     resampling and normalization are performed once, then each template is
     correlated against the flux batch. Set ``batch_size`` to limit peak memory
-    when searching very large batches. If ``allow_negative_peaks`` is false,
-    only clearly positive-centered templates are searched.
+    when searching very large batches. ``backend`` chooses the correlation
+    implementation; ``"auto"`` uses JAX only when a GPU is visible. If
+    ``allow_negative_peaks`` is false, only clearly positive-centered templates
+    are searched.
     """
 
     templates, template_metadata = _resolve_templates(templates, template_library_path)
@@ -855,6 +950,7 @@ def detect_matched_filter_peaks_batched(
         prominence_sigma,
         min_score_sigma,
     )
+    resolved_backend = _resolve_backend(backend)
 
     time_array = _as_float_array(time, "time")
     flux_matrix = _as_float_matrix(flux, "flux")
@@ -897,11 +993,10 @@ def detect_matched_filter_peaks_batched(
                 polarity_flux[batch_start:batch_end],
                 pad_samples,
             )
-            matched_filter_outputs = signal.correlate(
+            matched_filter_outputs = _correlate_valid_matrix(
                 detection_flux,
-                template.flux[np.newaxis, :],
-                mode="valid",
-                method="auto",
+                template.flux,
+                backend=resolved_backend,
             )
 
             for batch_curve_index, matched_filter_output in enumerate(

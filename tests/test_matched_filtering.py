@@ -3,6 +3,7 @@ import unittest
 import numpy as np
 import pytest
 
+import searchlight.matched_filtering as matched_filtering
 from searchlight.matched_filtering import (
     MatchedFilterTemplateLibrary,
     MatchedFilterTemplate,
@@ -517,6 +518,22 @@ def test_detect_accepts_two_dimensional_flux_for_batched_search():
 
     assert len(matches) == 2
     assert [curve_matches[0].peak_index for curve_matches in matches] == [25, 55]
+
+
+def test_detector_rejects_invalid_backend():
+    with pytest.raises(ValueError, match="backend must be"):
+        detect_matched_filter_peaks(
+            np.arange(10.0),
+            np.ones(10),
+            [MatchedFilterTemplate(np.ones(3), np.arange(3.0))],
+            backend="cupy",
+        )
+
+
+def test_auto_backend_uses_cpu_without_visible_jax_gpu(monkeypatch):
+    monkeypatch.setattr(matched_filtering, "_jax_gpu_available", lambda: False)
+
+    assert matched_filtering._resolve_backend("auto") == "cpu"
 
 
 def test_batched_detector_rejects_mismatched_flux_width():
