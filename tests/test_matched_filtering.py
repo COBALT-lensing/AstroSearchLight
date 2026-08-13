@@ -29,8 +29,11 @@ def assert_matches_close(actual, expected):
         assert actual_match.peak_time == pytest.approx(expected_match.peak_time)
         assert actual_match.start_time == pytest.approx(expected_match.start_time)
         assert actual_match.end_time == pytest.approx(expected_match.end_time)
-        assert actual_match.score == pytest.approx(expected_match.score)
-        assert actual_match.prominence == pytest.approx(expected_match.prominence)
+        assert actual_match.score == pytest.approx(expected_match.score, abs=1e-6)
+        assert actual_match.prominence == pytest.approx(
+            expected_match.prominence,
+            abs=1e-6,
+        )
 
 
 class MatchedFilteringTest(unittest.TestCase):
@@ -64,12 +67,12 @@ class MatchedFilteringTest(unittest.TestCase):
 
         self.assertEqual(len(matches), 1)
         self.assertEqual(matches[0].template_index, 0)
-        self.assertEqual(matches[0].start_index, 93)
+        self.assertEqual(matches[0].start_index, 80)
         self.assertEqual(matches[0].peak_index, 100)
-        self.assertEqual(matches[0].end_index, 107)
-        self.assertAlmostEqual(matches[0].start_time, 93.613628, places=6)
+        self.assertEqual(matches[0].end_index, 120)
+        self.assertAlmostEqual(matches[0].start_time, 80.0, places=6)
         self.assertEqual(matches[0].peak_time, time[100])
-        self.assertAlmostEqual(matches[0].end_time, 106.386372, places=6)
+        self.assertAlmostEqual(matches[0].end_time, 120.0, places=6)
 
     def test_limits_matches_by_score_across_template_bank(self):
         time = np.arange(200.0)
@@ -116,7 +119,7 @@ class MatchedFilteringTest(unittest.TestCase):
         self.assertEqual(len(matches), 1)
         self.assertEqual(matches[0].template_index, 1)
 
-    def test_can_return_overlapping_template_matches(self):
+    def test_envelope_collapses_overlapping_template_matches(self):
         time = np.arange(200.0)
         template_time = np.arange(-10.0, 11.0)
         narrow = np.exp(-0.5 * (template_time / 2.0) ** 2)
@@ -136,7 +139,8 @@ class MatchedFilteringTest(unittest.TestCase):
             dedupe_overlaps=False,
         )
 
-        self.assertEqual(len(matches), 2)
+        self.assertEqual(len(matches), 1)
+        self.assertEqual(matches[0].template_index, 1)
 
     def test_positive_template_rejects_negative_flux_excursion_shoulders(self):
         time = np.arange(200.0)
@@ -415,9 +419,9 @@ def test_detect_can_load_templates_from_library_path(tmp_path):
     )
 
     assert len(matches) == 1
-    assert matches[0].start_index == 46
+    assert matches[0].start_index == 40
     assert matches[0].peak_index == 50
-    assert matches[0].end_index == 54
+    assert matches[0].end_index == 60
 
 
 def test_library_tau_eff_limits_reported_match_window(tmp_path):
