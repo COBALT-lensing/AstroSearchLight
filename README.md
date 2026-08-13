@@ -133,7 +133,10 @@ normalizes templates once, then correlates each template against a batch of
 light curves. Use `batch_size=N` to cap peak memory for very large searches.
 For one-dimensional light curves with `backend="jax"`, `batch_size=N` instead
 caps the number of templates in each JAX filter-bank correlation; the default is
-512 templates per batch.
+512 templates per batch. This path keeps the template-bank scores on the JAX
+device long enough to reject templates that cannot pass the configured score
+and prominence thresholds before transferring traces back for exact SciPy peak
+measurement.
 Both public detector entry points accept `backend="auto"|"cpu"|"jax"` for the
 matched-filter correlations. The default `auto` uses JAX when JAX can see a GPU
 and otherwise keeps the SciPy CPU path; pass `backend="jax"` to force JAX.

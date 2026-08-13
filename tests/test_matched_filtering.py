@@ -598,6 +598,46 @@ def test_jax_single_curve_template_bank_matches_cpu_results():
     assert_matches_close(jax_matches, cpu_matches)
 
 
+def test_jax_template_bank_prefilter_preserves_cpu_results():
+    rng = np.random.default_rng(42)
+    time = np.arange(220.0)
+    template_time = np.arange(-8.0, 9.0)
+    signal_template = np.exp(-0.5 * (template_time / 1.7) ** 2)
+    distractor_templates = [
+        np.sin(0.3 * template_time + phase) + 0.1 * template_time
+        for phase in np.linspace(0.0, np.pi, 5)
+    ]
+    templates = [
+        MatchedFilterTemplate(template_flux, template_time)
+        for template_flux in [signal_template, *distractor_templates]
+    ]
+    flux = 1.0 + rng.normal(0.0, 0.01, len(time))
+    flux[95 : 95 + len(signal_template)] += 0.25 * signal_template
+
+    cpu_matches = detect_matched_filter_peaks(
+        time,
+        flux,
+        templates,
+        prominence_sigma=3.0,
+        min_score_sigma=4.0,
+        dedupe_overlaps=False,
+        backend="cpu",
+    )
+    jax_matches = detect_matched_filter_peaks(
+        time,
+        flux,
+        templates,
+        prominence_sigma=3.0,
+        min_score_sigma=4.0,
+        dedupe_overlaps=False,
+        batch_size=2,
+        backend="jax",
+    )
+
+    assert cpu_matches
+    assert_matches_close(jax_matches, cpu_matches)
+
+
 def test_detector_rejects_invalid_backend():
     with pytest.raises(ValueError, match="backend must be"):
         detect_matched_filter_peaks(
