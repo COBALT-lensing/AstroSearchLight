@@ -21,6 +21,7 @@ DEFAULT_MIN_CENTER_FLUX_SIGMA = 4.0
 DEFAULT_TEMPLATE_BATCH_SIZE = 512
 _UNSET = object()
 _CORRELATION_BACKENDS = {"auto", "cpu", "jax"}
+_JAX_CANDIDATE_TEMPLATE_MASK = None
 
 
 @dataclass(frozen=True)
@@ -730,6 +731,65 @@ def _correlate_valid_matrix(
     return np.asarray(jax.device_get(result[:, :, 0]), dtype=float)
 
 
+def _jax_candidate_template_mask(
+    matched_filter_outputs: np.ndarray,
+    valid_center: np.ndarray,
+    *,
+    min_score_sigma: float | None,
+) -> np.ndarray:
+    """Return templates that may pass exact SciPy peak finding.
+
+    ``matched_filter_outputs`` is shaped ``(n_templates, n_valid_positions)``.
+    The mask is conservative: templates are kept if they have any valid local
+    maximum above the robust score threshold. Exact prominence and window
+    calculations still run through SciPy for those templates.
+    """
+
+    global _JAX_CANDIDATE_TEMPLATE_MASK
+    if _JAX_CANDIDATE_TEMPLATE_MASK is None:
+        import jax
+        import jax.numpy as jnp
+
+        @jax.jit
+        def candidate_template_mask(scores, center_mask, score_sigma):
+            median = jnp.median(scores, axis=1, keepdims=True)
+            mad = jnp.median(jnp.abs(scores - median), axis=1, keepdims=True)
+            std = jnp.std(scores, axis=1, keepdims=True)
+            scatter = jnp.where(mad > 0, 1.4826 * mad, jnp.where(std > 0, std, 1.0))
+
+            left = jnp.pad(
+                scores[:, :-1],
+                ((0, 0), (1, 0)),
+                constant_values=-jnp.inf,
+            )
+            right = jnp.pad(
+                scores[:, 1:],
+                ((0, 0), (0, 1)),
+                constant_values=-jnp.inf,
+            )
+            local_max = (scores >= left) & (scores >= right)
+            high_enough = jnp.where(
+                score_sigma < 0,
+                jnp.ones_like(local_max),
+                scores >= (median + score_sigma * scatter),
+            )
+            candidate = local_max & high_enough & center_mask[None, :]
+            return jnp.any(candidate, axis=1)
+
+        _JAX_CANDIDATE_TEMPLATE_MASK = candidate_template_mask
+
+    import jax
+    import jax.numpy as jnp
+
+    score_sigma = -1.0 if min_score_sigma is None else float(min_score_sigma)
+    mask = _JAX_CANDIDATE_TEMPLATE_MASK(
+        jnp.asarray(matched_filter_outputs, dtype=jnp.float64),
+        jnp.asarray(valid_center, dtype=bool),
+        jnp.asarray(score_sigma, dtype=jnp.float64),
+    )
+    return np.asarray(jax.device_get(mask), dtype=bool)
+
+
 def _detect_matched_filter_peaks_template_batched(
     time_array: np.ndarray,
     search_flux: np.ndarray,
@@ -762,6 +822,8 @@ def _detect_matched_filter_peaks_template_batched(
             target_cadence,
         )
         detection_polarity_flux = _pad_polarity_signal(polarity_flux, pad_samples)
+        output_len = len(detection_time) - template_length + 1
+        valid_center = np.ones(output_len, dtype=bool)
         for batch_start in range(0, len(template_group), template_batch_size):
             batch_templates = template_group[
                 batch_start : batch_start + template_batch_size
@@ -772,10 +834,20 @@ def _detect_matched_filter_peaks_template_batched(
                 template_flux,
                 backend=backend,
             )
+            candidate_template_mask = _jax_candidate_template_mask(
+                matched_filter_outputs,
+                valid_center,
+                min_score_sigma=min_score_sigma,
+            )
+            candidate_templates = [
+                template
+                for template, keep in zip(batch_templates, candidate_template_mask)
+                if keep
+            ]
 
             for template, matched_filter_output in zip(
-                batch_templates,
-                matched_filter_outputs,
+                candidate_templates,
+                matched_filter_outputs[candidate_template_mask],
                 strict=True,
             ):
                 peak_prominence = (
