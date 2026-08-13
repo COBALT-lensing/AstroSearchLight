@@ -18,6 +18,7 @@ DEFAULT_PROMINENCE_SIGMA = 3.0
 DEFAULT_MIN_SCORE_SIGMA = 4.0
 DEFAULT_MATCH_WINDOW_REL_HEIGHT = 0.5
 DEFAULT_MIN_CENTER_FLUX_SIGMA = 4.0
+DEFAULT_TEMPLATE_BATCH_SIZE = 512
 _UNSET = object()
 _CORRELATION_BACKENDS = {"auto", "cpu", "jax"}
 
@@ -635,6 +636,44 @@ def _correlate_valid_1d(
             method="auto",
         )
 
+    template_flux = np.asarray(template_flux, dtype=float)
+    return _correlate_valid_template_matrix(
+        detection_flux,
+        template_flux[np.newaxis, :],
+        backend=backend,
+    )[0]
+
+
+def _correlate_valid_template_matrix(
+    detection_flux: np.ndarray,
+    template_flux: np.ndarray,
+    *,
+    backend: str,
+) -> np.ndarray:
+    """Correlate one signal against a same-length bank of templates.
+
+    Returns an array shaped ``(n_templates, n_valid_positions)``.
+    """
+
+    template_flux = np.asarray(template_flux, dtype=float)
+    if template_flux.ndim != 2:
+        raise ValueError("template_flux must be two-dimensional")
+    if template_flux.shape[1] > len(detection_flux):
+        raise ValueError("template rows cannot be longer than detection_flux")
+
+    if backend == "cpu":
+        return np.vstack(
+            [
+                signal.correlate(
+                    detection_flux,
+                    row,
+                    mode="valid",
+                    method="auto",
+                )
+                for row in template_flux
+            ]
+        )
+
     os.environ.setdefault("XLA_PYTHON_CLIENT_PREALLOCATE", "false")
     import jax
 
@@ -643,7 +682,11 @@ def _correlate_valid_1d(
     from jax import lax
 
     lhs = jnp.asarray(detection_flux, dtype=jnp.float64)[None, :, None]
-    rhs = jnp.asarray(template_flux, dtype=jnp.float64)[:, None, None]
+    rhs = jnp.swapaxes(jnp.asarray(template_flux, dtype=jnp.float64), 0, 1)[
+        :,
+        None,
+        :,
+    ]
     result = lax.conv_general_dilated(
         lhs,
         rhs,
@@ -651,7 +694,7 @@ def _correlate_valid_1d(
         padding="VALID",
         dimension_numbers=("NWC", "WIO", "NWC"),
     )
-    return np.asarray(jax.device_get(result[0, :, 0]), dtype=float)
+    return np.asarray(jax.device_get(result[0]), dtype=float).T
 
 
 def _correlate_valid_matrix(
@@ -685,6 +728,137 @@ def _correlate_valid_matrix(
         dimension_numbers=("NWC", "WIO", "NWC"),
     )
     return np.asarray(jax.device_get(result[:, :, 0]), dtype=float)
+
+
+def _detect_matched_filter_peaks_template_batched(
+    time_array: np.ndarray,
+    search_flux: np.ndarray,
+    polarity_flux: np.ndarray,
+    min_center_flux: float,
+    prepared_templates: list[_PreparedMatchedFilterTemplate],
+    *,
+    target_cadence: float,
+    prominence: float | None,
+    prominence_sigma: float,
+    height: float | None,
+    min_score_sigma: float | None,
+    distance: int | None,
+    dedupe_overlaps: bool,
+    max_matches: int | None,
+    match_window_rel_height: float,
+    template_batch_size: int,
+    backend: str,
+) -> list[MatchedFilterMatch]:
+    matches: list[MatchedFilterMatch] = []
+    templates_by_length: dict[int, list[_PreparedMatchedFilterTemplate]] = {}
+    for template in prepared_templates:
+        templates_by_length.setdefault(template.length, []).append(template)
+
+    for template_length, template_group in templates_by_length.items():
+        detection_time, detection_flux, pad_samples = _pad_search_signal_for_template(
+            time_array,
+            search_flux,
+            template_length,
+            target_cadence,
+        )
+        detection_polarity_flux = _pad_polarity_signal(polarity_flux, pad_samples)
+        for batch_start in range(0, len(template_group), template_batch_size):
+            batch_templates = template_group[
+                batch_start : batch_start + template_batch_size
+            ]
+            template_flux = np.vstack([template.flux for template in batch_templates])
+            matched_filter_outputs = _correlate_valid_template_matrix(
+                detection_flux,
+                template_flux,
+                backend=backend,
+            )
+
+            for template, matched_filter_output in zip(
+                batch_templates,
+                matched_filter_outputs,
+                strict=True,
+            ):
+                peak_prominence = (
+                    prominence
+                    if prominence is not None
+                    else _default_prominence(matched_filter_output, prominence_sigma)
+                )
+                peak_height = (
+                    height
+                    if height is not None or min_score_sigma is None
+                    else _default_height(matched_filter_output, min_score_sigma)
+                )
+                peak_indices, properties = signal.find_peaks(
+                    matched_filter_output,
+                    prominence=peak_prominence,
+                    height=peak_height,
+                    distance=distance,
+                )
+                prominences = properties.get("prominences", np.zeros_like(peak_indices))
+                if len(peak_indices):
+                    _, _, left_ips, right_ips = signal.peak_widths(
+                        matched_filter_output,
+                        peak_indices,
+                        rel_height=match_window_rel_height,
+                    )
+                else:
+                    left_ips = right_ips = np.asarray([], dtype=float)
+
+                for peak_index, peak_prominence_value, left_ip, right_ip in zip(
+                    peak_indices,
+                    prominences,
+                    left_ips,
+                    right_ips,
+                ):
+                    detection_start_index = int(peak_index)
+                    detection_center_index = detection_start_index + template.center
+                    center_index = detection_center_index - pad_samples
+                    if not _is_observed_peak(center_index, len(time_array)):
+                        continue
+                    if not _passes_template_polarity(
+                        detection_polarity_flux,
+                        detection_start_index,
+                        template,
+                        min_center_flux,
+                    ):
+                        continue
+                    start_index, end_index, start_time, end_time = (
+                        _match_window_from_correlation_width(
+                            detection_time,
+                            left_ip=float(left_ip),
+                            right_ip=float(right_ip),
+                            template_center=template.center,
+                            pad_samples=pad_samples,
+                        )
+                    )
+                    start_index, end_index, start_time, end_time = (
+                        _clip_match_window_to_observation(
+                            start_index=start_index,
+                            end_index=end_index,
+                            start_time=start_time,
+                            end_time=end_time,
+                            observation_time=time_array,
+                        )
+                    )
+                    matches.append(
+                        MatchedFilterMatch(
+                            template_index=template.index,
+                            peak_index=center_index,
+                            start_index=start_index,
+                            end_index=end_index,
+                            peak_time=float(detection_time[detection_center_index]),
+                            start_time=start_time,
+                            end_time=end_time,
+                            score=float(matched_filter_output[peak_index]),
+                            prominence=float(peak_prominence_value),
+                        )
+                    )
+
+    return _finalize_matches(
+        matches,
+        dedupe_overlaps=dedupe_overlaps,
+        max_matches=max_matches,
+    )
 
 
 def detect_matched_filter_peaks(
@@ -752,8 +926,9 @@ def detect_matched_filter_peaks(
         If provided, return only the highest-scoring matches across all
         templates.
     batch_size : int, optional
-        Number of light curves per correlation batch when ``flux`` is
-        two-dimensional. Ignored for one-dimensional flux.
+        Number of templates per JAX correlation batch when ``flux`` is
+        one-dimensional, or number of light curves per correlation batch when
+        ``flux`` is two-dimensional.
     backend : {"auto", "cpu", "jax"}
         Correlation backend. ``"auto"`` uses JAX when a GPU is visible to JAX
         and otherwise uses SciPy. ``"jax"`` forces JAX for the matched-filter
@@ -782,6 +957,8 @@ def detect_matched_filter_peaks(
 
     time_array = _as_float_array(time, "time")
     flux_array = np.asarray(flux)
+    if batch_size is not None and batch_size < 1:
+        raise ValueError("batch_size must be positive")
     if flux_array.ndim == 2:
         return detect_matched_filter_peaks_batched(
             time_array,
@@ -813,6 +990,27 @@ def detect_matched_filter_peaks(
         target_cadence,
         allow_negative_peaks=allow_negative_peaks,
     )
+    if resolved_backend == "jax":
+        template_batch_size = batch_size or DEFAULT_TEMPLATE_BATCH_SIZE
+        return _detect_matched_filter_peaks_template_batched(
+            time_array,
+            search_flux,
+            polarity_flux,
+            min_center_flux,
+            prepared_templates,
+            target_cadence=target_cadence,
+            prominence=prominence,
+            prominence_sigma=prominence_sigma,
+            height=height,
+            min_score_sigma=min_score_sigma,
+            distance=distance,
+            dedupe_overlaps=dedupe_overlaps,
+            max_matches=max_matches,
+            match_window_rel_height=match_window_rel_height,
+            template_batch_size=template_batch_size,
+            backend=resolved_backend,
+        )
+
     matches: list[MatchedFilterMatch] = []
 
     for template in prepared_templates:

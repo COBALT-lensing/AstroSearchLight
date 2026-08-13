@@ -8,6 +8,8 @@ from searchlight.matched_filtering import (
     MatchedFilterTemplateLibrary,
     MatchedFilterTemplate,
     _UNSET,
+    _correlate_valid_1d,
+    _correlate_valid_template_matrix,
     _resolve_threshold_sigmas,
     _trim_template_edges_to_length,
     detect_matched_filter_peaks,
@@ -15,6 +17,20 @@ from searchlight.matched_filtering import (
     load_template_library,
     save_template_library,
 )
+
+
+def assert_matches_close(actual, expected):
+    assert len(actual) == len(expected)
+    for actual_match, expected_match in zip(actual, expected):
+        assert actual_match.template_index == expected_match.template_index
+        assert actual_match.peak_index == expected_match.peak_index
+        assert actual_match.start_index == expected_match.start_index
+        assert actual_match.end_index == expected_match.end_index
+        assert actual_match.peak_time == pytest.approx(expected_match.peak_time)
+        assert actual_match.start_time == pytest.approx(expected_match.start_time)
+        assert actual_match.end_time == pytest.approx(expected_match.end_time)
+        assert actual_match.score == pytest.approx(expected_match.score)
+        assert actual_match.prominence == pytest.approx(expected_match.prominence)
 
 
 class MatchedFilteringTest(unittest.TestCase):
@@ -518,6 +534,68 @@ def test_detect_accepts_two_dimensional_flux_for_batched_search():
 
     assert len(matches) == 2
     assert [curve_matches[0].peak_index for curve_matches in matches] == [25, 55]
+
+
+def test_jax_template_bank_correlation_matches_single_template_correlations():
+    detection_flux = np.linspace(-0.5, 0.8, 40) ** 2
+    template_flux = np.asarray(
+        [
+            [0.0, 1.0, 0.5, -0.25],
+            [1.0, -0.5, 0.25, 0.0],
+            [-0.2, 0.1, 0.4, 0.8],
+        ]
+    )
+
+    expected = np.vstack(
+        [
+            _correlate_valid_1d(detection_flux, row, backend="cpu")
+            for row in template_flux
+        ]
+    )
+    actual = _correlate_valid_template_matrix(
+        detection_flux,
+        template_flux,
+        backend="jax",
+    )
+
+    assert actual.shape == expected.shape
+    assert np.allclose(actual, expected)
+
+
+def test_jax_single_curve_template_bank_matches_cpu_results():
+    time = np.arange(160.0)
+    template_time = np.arange(-8.0, 9.0)
+    narrow = np.exp(-0.5 * (template_time / 1.5) ** 2)
+    wide = np.exp(-0.5 * (template_time / 3.0) ** 2)
+    flux = np.ones_like(time)
+    flux[50 : 50 + len(narrow)] += 0.2 * narrow
+    flux[105 : 105 + len(wide)] += 0.16 * wide
+    templates = [
+        MatchedFilterTemplate(narrow, template_time),
+        MatchedFilterTemplate(wide, template_time),
+    ]
+
+    cpu_matches = detect_matched_filter_peaks(
+        time,
+        flux,
+        templates,
+        prominence=0.05,
+        min_score_sigma=None,
+        dedupe_overlaps=False,
+        backend="cpu",
+    )
+    jax_matches = detect_matched_filter_peaks(
+        time,
+        flux,
+        templates,
+        prominence=0.05,
+        min_score_sigma=None,
+        dedupe_overlaps=False,
+        batch_size=1,
+        backend="jax",
+    )
+
+    assert_matches_close(jax_matches, cpu_matches)
 
 
 def test_detector_rejects_invalid_backend():

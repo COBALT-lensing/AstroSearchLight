@@ -131,6 +131,9 @@ with shape `(n_light_curves, n_times)` to `detect_matched_filter_peaks`, or call
 `detect_matched_filter_peaks_batched` directly. The batched path resamples and
 normalizes templates once, then correlates each template against a batch of
 light curves. Use `batch_size=N` to cap peak memory for very large searches.
+For one-dimensional light curves with `backend="jax"`, `batch_size=N` instead
+caps the number of templates in each JAX filter-bank correlation; the default is
+512 templates per batch.
 Both public detector entry points accept `backend="auto"|"cpu"|"jax"` for the
 matched-filter correlations. The default `auto` uses JAX when JAX can see a GPU
 and otherwise keeps the SciPy CPU path; pass `backend="jax"` to force JAX.
