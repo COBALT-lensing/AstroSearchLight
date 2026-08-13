@@ -48,7 +48,7 @@ class FeatureFilter(object):
                 self.classes = json.load(class_f)
 
     def _load_dir(self, path):
-        paths = list(Path(path).glob("*.fits.gz"))
+        paths = sorted(Path(path).glob("*.fits.gz"))
         return paths, self._load_paths(paths, desc=str(path))
 
     def _load_paths(self, paths, desc=""):
@@ -62,7 +62,7 @@ class FeatureFilter(object):
 
     def _load_datasets(self, path):
         path = Path(path)
-        paths = [x for x in path.iterdir() if x.is_dir()]
+        paths = sorted(x for x in path.iterdir() if x.is_dir())
 
         xs = []
         ys = []
