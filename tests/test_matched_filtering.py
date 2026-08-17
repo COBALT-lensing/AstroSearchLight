@@ -697,5 +697,55 @@ def test_detect_rejects_templates_and_library_path_together(tmp_path):
         )
 
 
+def test_configure_jax_compilation_cache_uses_searchlight_cache(monkeypatch, tmp_path):
+    class FakeConfig:
+        def __init__(self):
+            self.values = {}
+
+        def update(self, name, value):
+            self.values[name] = value
+
+    class FakeJax:
+        config = FakeConfig()
+
+    cache_path = tmp_path / "jax-cache"
+    monkeypatch.setattr(
+        matched_filtering,
+        "DEFAULT_JAX_COMPILATION_CACHE_PATH",
+        cache_path,
+    )
+    monkeypatch.delenv("JAX_COMPILATION_CACHE_DIR", raising=False)
+    monkeypatch.setattr(matched_filtering, "_JAX_COMPILATION_CACHE_CONFIGURED", False)
+
+    matched_filtering._configure_jax_compilation_cache(FakeJax)
+
+    assert cache_path.exists()
+    assert FakeJax.config.values["jax_enable_compilation_cache"] is True
+    assert FakeJax.config.values["jax_compilation_cache_dir"] == str(cache_path)
+    assert FakeJax.config.values["jax_persistent_cache_min_compile_time_secs"] == 0.0
+    assert FakeJax.config.values["jax_persistent_cache_min_entry_size_bytes"] == 0
+
+
+def test_configure_jax_compilation_cache_respects_env_path(monkeypatch, tmp_path):
+    class FakeConfig:
+        def __init__(self):
+            self.values = {}
+
+        def update(self, name, value):
+            self.values[name] = value
+
+    class FakeJax:
+        config = FakeConfig()
+
+    cache_path = tmp_path / "custom-jax-cache"
+    monkeypatch.setenv("JAX_COMPILATION_CACHE_DIR", str(cache_path))
+    monkeypatch.setattr(matched_filtering, "_JAX_COMPILATION_CACHE_CONFIGURED", False)
+
+    matched_filtering._configure_jax_compilation_cache(FakeJax)
+
+    assert cache_path.exists()
+    assert FakeJax.config.values["jax_compilation_cache_dir"] == str(cache_path)
+
+
 if __name__ == "__main__":
     unittest.main()

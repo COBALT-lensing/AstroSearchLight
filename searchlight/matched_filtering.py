@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import time
 import weakref
@@ -13,9 +14,11 @@ from typing import Iterable
 import numpy as np
 from scipy import signal
 
-from .paths import DATA_PATH
+from .paths import CACHE_PATH, DATA_PATH
 
 DEFAULT_TEMPLATE_LIBRARY_PATH = DATA_PATH / "matched_filter_templates.npz"
+DEFAULT_JAX_COMPILATION_CACHE_PATH = CACHE_PATH / "jax_compilation_cache"
+logger = logging.getLogger(__name__)
 DEFAULT_PROMINENCE_SIGMA = 3.0
 DEFAULT_MIN_SCORE_SIGMA = 4.0
 DEFAULT_MATCH_WINDOW_REL_HEIGHT = 0.5
@@ -28,6 +31,7 @@ _JAX_CORRELATE_VALID_MATRIX = None
 _JAX_TEMPLATE_BANK_ENVELOPE = None
 _JAX_TEMPLATE_BANK_ENVELOPE_MATRIX = None
 _PREPARED_ENVELOPE_TEMPLATE_CACHE = {}
+_JAX_COMPILATION_CACHE_CONFIGURED = False
 
 
 @dataclass(frozen=True)
@@ -714,11 +718,39 @@ def _passes_template_polarity(
     return polarity_score > 0
 
 
+def _configure_jax_compilation_cache(jax_module):
+    global _JAX_COMPILATION_CACHE_CONFIGURED
+    if _JAX_COMPILATION_CACHE_CONFIGURED:
+        return
+
+    cache_dir = os.environ.get("JAX_COMPILATION_CACHE_DIR")
+    if cache_dir is None:
+        cache_dir = str(DEFAULT_JAX_COMPILATION_CACHE_PATH)
+        os.environ.setdefault("JAX_COMPILATION_CACHE_DIR", cache_dir)
+
+    try:
+        Path(cache_dir).mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        logger.warning(
+            "Could not create JAX compilation cache directory %s: %s",
+            cache_dir,
+            exc,
+        )
+        _JAX_COMPILATION_CACHE_CONFIGURED = True
+        return
+    jax_module.config.update("jax_enable_compilation_cache", True)
+    jax_module.config.update("jax_compilation_cache_dir", cache_dir)
+    jax_module.config.update("jax_persistent_cache_min_compile_time_secs", 0.0)
+    jax_module.config.update("jax_persistent_cache_min_entry_size_bytes", 0)
+    _JAX_COMPILATION_CACHE_CONFIGURED = True
+
+
 def _jax_gpu_available() -> bool:
     try:
         os.environ.setdefault("XLA_PYTHON_CLIENT_PREALLOCATE", "false")
         import jax
 
+        _configure_jax_compilation_cache(jax)
         return any(device.platform == "gpu" for device in jax.devices())
     except Exception:
         return False
@@ -764,6 +796,7 @@ def _jax_correlate_valid_template_matrix_device(
     os.environ.setdefault("XLA_PYTHON_CLIENT_PREALLOCATE", "false")
     import jax
 
+    _configure_jax_compilation_cache(jax)
     jax.config.update("jax_enable_x64", True)
     import jax.numpy as jnp
     from jax import lax
@@ -823,6 +856,7 @@ def _correlate_valid_template_matrix(
 
     import jax
 
+    _configure_jax_compilation_cache(jax)
     result = _jax_correlate_valid_template_matrix_device(
         detection_flux,
         template_flux,
@@ -840,6 +874,7 @@ def _jax_template_bank_envelope(
     os.environ.setdefault("XLA_PYTHON_CLIENT_PREALLOCATE", "false")
     import jax
 
+    _configure_jax_compilation_cache(jax)
     import jax.numpy as jnp
     from jax import lax
 
@@ -881,6 +916,7 @@ def _jax_template_bank_envelope_matrix(
     os.environ.setdefault("XLA_PYTHON_CLIENT_PREALLOCATE", "false")
     import jax
 
+    _configure_jax_compilation_cache(jax)
     import jax.numpy as jnp
     from jax import lax
 
@@ -972,6 +1008,7 @@ def _correlate_valid_matrix(
     os.environ.setdefault("XLA_PYTHON_CLIENT_PREALLOCATE", "false")
     import jax
 
+    _configure_jax_compilation_cache(jax)
     jax.config.update("jax_enable_x64", True)
     import jax.numpy as jnp
     from jax import lax
