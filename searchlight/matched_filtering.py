@@ -729,7 +729,11 @@ def _configure_jax_compilation_cache(jax_module):
         os.environ.setdefault("JAX_COMPILATION_CACHE_DIR", cache_dir)
 
     try:
-        Path(cache_dir).mkdir(parents=True, exist_ok=True)
+        cache_path = Path(cache_dir)
+        cache_path.mkdir(parents=True, exist_ok=True)
+        probe_path = cache_path / ".write_test"
+        probe_path.write_text("")
+        probe_path.unlink()
     except OSError as exc:
         logger.warning(
             "Could not create JAX compilation cache directory %s: %s",
@@ -909,6 +913,7 @@ def _jax_template_bank_envelope(
 def _jax_template_bank_envelope_matrix(
     detection_flux: np.ndarray,
     template_flux: np.ndarray,
+    template_valid_mask: np.ndarray | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Return best score and in-batch template index for each curve/offset."""
 
@@ -923,7 +928,7 @@ def _jax_template_bank_envelope_matrix(
     if _JAX_TEMPLATE_BANK_ENVELOPE_MATRIX is None:
 
         @jax.jit
-        def template_bank_envelope_matrix(signal_matrix, template_bank):
+        def template_bank_envelope_matrix(signal_matrix, template_bank, valid_mask):
             lhs = signal_matrix[:, :, None]
             filters = jnp.swapaxes(template_bank, 0, 1)[:, None, :]
             scores = lax.conv_general_dilated(
@@ -933,6 +938,7 @@ def _jax_template_bank_envelope_matrix(
                 padding="VALID",
                 dimension_numbers=("NWC", "WIO", "NWC"),
             )
+            scores = jnp.where(valid_mask[None, None, :], scores, -jnp.inf)
             return jnp.max(scores, axis=2), jnp.argmax(scores, axis=2)
 
         _JAX_TEMPLATE_BANK_ENVELOPE_MATRIX = template_bank_envelope_matrix
@@ -940,6 +946,9 @@ def _jax_template_bank_envelope_matrix(
     scores, template_indices = _JAX_TEMPLATE_BANK_ENVELOPE_MATRIX(
         jnp.asarray(detection_flux, dtype=jnp.float32),
         jnp.asarray(template_flux, dtype=jnp.float32),
+        jnp.ones(template_flux.shape[0], dtype=bool)
+        if template_valid_mask is None
+        else jnp.asarray(template_valid_mask, dtype=bool),
     )
     scores, template_indices = jax.device_get((scores, template_indices))
     return (
@@ -973,9 +982,14 @@ def _template_bank_envelope_matrix(
     template_flux: np.ndarray,
     *,
     backend: str,
+    template_valid_mask: np.ndarray | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
     if backend == "jax":
-        return _jax_template_bank_envelope_matrix(detection_flux, template_flux)
+        return _jax_template_bank_envelope_matrix(
+            detection_flux,
+            template_flux,
+            template_valid_mask=template_valid_mask,
+        )
 
     curve_scores = []
     curve_indices = []
@@ -985,6 +999,15 @@ def _template_bank_envelope_matrix(
             template_flux,
             backend=backend,
         )
+        if template_valid_mask is not None:
+            matched_filter_outputs = _correlate_valid_template_matrix(
+                curve_flux,
+                template_flux,
+                backend=backend,
+            )
+            matched_filter_outputs[~template_valid_mask] = -np.inf
+            scores = np.max(matched_filter_outputs, axis=0)
+            indices = np.argmax(matched_filter_outputs, axis=0)
         curve_scores.append(scores)
         curve_indices.append(indices)
     return np.vstack(curve_scores), np.vstack(curve_indices)
@@ -1233,6 +1256,7 @@ def _detect_matched_filter_peaks_envelope_matrix(
             batch_templates = template_group[
                 batch_start : batch_start + template_batch_size
             ]
+            real_template_batch_size = len(batch_templates)
             if progress_callback is not None:
                 progress_callback(
                     {
@@ -1241,7 +1265,8 @@ def _detect_matched_filter_peaks_envelope_matrix(
                         "total_template_batches": total_template_batches,
                         "template_length": template_length,
                         "template_batch_start": batch_start,
-                        "template_batch_size": len(batch_templates),
+                        "template_batch_size": real_template_batch_size,
+                        "padded_template_batch_size": template_batch_size,
                         "template_group_size": len(template_group),
                         "curve_count": search_flux.shape[0],
                         "sample_count": search_flux.shape[1],
@@ -1254,10 +1279,26 @@ def _detect_matched_filter_peaks_envelope_matrix(
                 [template.flux for template in batch_templates],
                 dtype=np.float32 if backend == "jax" else float,
             )
+            template_valid_mask = np.ones(len(template_flux), dtype=bool)
+            if len(template_flux) < template_batch_size:
+                pad_width = template_batch_size - len(template_flux)
+                template_flux = np.pad(
+                    template_flux,
+                    ((0, pad_width), (0, 0)),
+                    mode="constant",
+                    constant_values=0.0,
+                )
+                template_valid_mask = np.pad(
+                    template_valid_mask,
+                    (0, pad_width),
+                    mode="constant",
+                    constant_values=False,
+                )
             batch_scores, batch_template_indices = _template_bank_envelope_matrix(
                 detection_flux,
                 template_flux,
                 backend=backend,
+                template_valid_mask=template_valid_mask,
             )
             improved = batch_scores > envelope_scores
             envelope_scores[improved] = batch_scores[improved]
@@ -1273,7 +1314,8 @@ def _detect_matched_filter_peaks_envelope_matrix(
                         "total_template_batches": total_template_batches,
                         "template_length": template_length,
                         "template_batch_start": batch_start,
-                        "template_batch_size": len(batch_templates),
+                        "template_batch_size": real_template_batch_size,
+                        "padded_template_batch_size": template_batch_size,
                         "template_group_size": len(template_group),
                         "curve_count": search_flux.shape[0],
                         "sample_count": search_flux.shape[1],
