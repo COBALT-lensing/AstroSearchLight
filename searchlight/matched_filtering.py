@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import time
 import weakref
 from dataclasses import dataclass
 from pathlib import Path
@@ -1154,6 +1155,7 @@ def _detect_matched_filter_peaks_envelope_matrix(
     max_matches: int | None,
     template_batch_size: int,
     backend: str,
+    progress_callback=None,
 ) -> list[list[MatchedFilterMatch]]:
     curve_matches: list[list[MatchedFilterMatch]] = [
         [] for _curve_index in range(search_flux.shape[0])
@@ -1162,6 +1164,12 @@ def _detect_matched_filter_peaks_envelope_matrix(
     for template in prepared_templates:
         templates_by_length.setdefault(template.length, []).append(template)
 
+    total_template_batches = sum(
+        (len(template_group) + template_batch_size - 1) // template_batch_size
+        for template_group in templates_by_length.values()
+    )
+    completed_template_batches = 0
+    filter_start_time = time.monotonic()
     for template_length, template_group in templates_by_length.items():
         detection_time, detection_flux, pad_samples = _pad_search_matrix_for_template(
             time_array,
@@ -1188,6 +1196,23 @@ def _detect_matched_filter_peaks_envelope_matrix(
             batch_templates = template_group[
                 batch_start : batch_start + template_batch_size
             ]
+            if progress_callback is not None:
+                progress_callback(
+                    {
+                        "event": "template_batch_start",
+                        "completed_template_batches": completed_template_batches,
+                        "total_template_batches": total_template_batches,
+                        "template_length": template_length,
+                        "template_batch_start": batch_start,
+                        "template_batch_size": len(batch_templates),
+                        "template_group_size": len(template_group),
+                        "curve_count": search_flux.shape[0],
+                        "sample_count": search_flux.shape[1],
+                        "output_len": output_len,
+                        "elapsed_seconds": time.monotonic() - filter_start_time,
+                    }
+                )
+            template_batch_start_time = time.monotonic()
             template_flux = np.asarray(
                 [template.flux for template in batch_templates],
                 dtype=np.float32 if backend == "jax" else float,
@@ -1202,6 +1227,26 @@ def _detect_matched_filter_peaks_envelope_matrix(
             envelope_template_indices[improved] = (
                 batch_start + batch_template_indices[improved]
             )
+            completed_template_batches += 1
+            if progress_callback is not None:
+                progress_callback(
+                    {
+                        "event": "template_batch_complete",
+                        "completed_template_batches": completed_template_batches,
+                        "total_template_batches": total_template_batches,
+                        "template_length": template_length,
+                        "template_batch_start": batch_start,
+                        "template_batch_size": len(batch_templates),
+                        "template_group_size": len(template_group),
+                        "curve_count": search_flux.shape[0],
+                        "sample_count": search_flux.shape[1],
+                        "output_len": output_len,
+                        "template_batch_seconds": (
+                            time.monotonic() - template_batch_start_time
+                        ),
+                        "elapsed_seconds": time.monotonic() - filter_start_time,
+                    }
+                )
 
         for curve_index in range(search_flux.shape[0]):
             curve_envelope_scores = envelope_scores[curve_index]
@@ -1309,6 +1354,7 @@ def detect_matched_filter_peaks(
     backend: str = "auto",
     match_window_rel_height: float = DEFAULT_MATCH_WINDOW_REL_HEIGHT,
     allow_negative_peaks: bool = False,
+    progress_callback=None,
 ) -> list[MatchedFilterMatch] | list[list[MatchedFilterMatch]]:
     """Find template-like peaks in a light curve.
 
@@ -1410,6 +1456,7 @@ def detect_matched_filter_peaks(
             backend=resolved_backend,
             match_window_rel_height=match_window_rel_height,
             allow_negative_peaks=allow_negative_peaks,
+            progress_callback=progress_callback,
         )
 
     flux_array = _as_float_array(flux_array, "flux")
@@ -1462,6 +1509,7 @@ def detect_matched_filter_peaks_batched(
     backend: str = "auto",
     match_window_rel_height: float = DEFAULT_MATCH_WINDOW_REL_HEIGHT,
     allow_negative_peaks: bool = False,
+    progress_callback=None,
 ) -> list[list[MatchedFilterMatch]]:
     """Find template-like peaks for many light curves sharing one time grid.
 
@@ -1520,4 +1568,5 @@ def detect_matched_filter_peaks_batched(
         max_matches=max_matches,
         template_batch_size=template_batch_size,
         backend=resolved_backend,
+        progress_callback=progress_callback,
     )
