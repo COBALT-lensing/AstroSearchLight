@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import weakref
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
@@ -24,6 +25,8 @@ _CORRELATION_BACKENDS = {"auto", "cpu", "jax"}
 _JAX_CORRELATE_VALID_TEMPLATE_MATRIX = None
 _JAX_CORRELATE_VALID_MATRIX = None
 _JAX_TEMPLATE_BANK_ENVELOPE = None
+_JAX_TEMPLATE_BANK_ENVELOPE_MATRIX = None
+_PREPARED_ENVELOPE_TEMPLATE_CACHE = {}
 
 
 @dataclass(frozen=True)
@@ -574,6 +577,60 @@ def _prepare_envelope_templates(
     return prepared_templates
 
 
+def _prepared_envelope_template_cache_key(
+    templates: Iterable[MatchedFilterTemplate],
+    target_cadence: float,
+    *,
+    allow_negative_peaks: bool,
+):
+    try:
+        template_ref = weakref.ref(templates)
+    except TypeError:
+        return None
+    return (
+        id(templates),
+        round(float(target_cadence), 12),
+        bool(allow_negative_peaks),
+    ), template_ref
+
+
+def _cached_prepare_envelope_templates(
+    templates: Iterable[MatchedFilterTemplate],
+    target_cadence: float,
+    *,
+    allow_negative_peaks: bool,
+) -> list[_PreparedMatchedFilterTemplate]:
+    cache_identity = _prepared_envelope_template_cache_key(
+        templates,
+        target_cadence,
+        allow_negative_peaks=allow_negative_peaks,
+    )
+    if cache_identity is None:
+        return _prepare_envelope_templates(
+            templates,
+            target_cadence,
+            allow_negative_peaks=allow_negative_peaks,
+        )
+
+    cache_key, template_ref = cache_identity
+    cached = _PREPARED_ENVELOPE_TEMPLATE_CACHE.get(cache_key)
+    if cached is not None:
+        cached_ref, prepared_templates = cached
+        if cached_ref() is templates:
+            return prepared_templates
+
+    prepared_templates = _prepare_envelope_templates(
+        templates,
+        target_cadence,
+        allow_negative_peaks=allow_negative_peaks,
+    )
+    _PREPARED_ENVELOPE_TEMPLATE_CACHE[cache_key] = (
+        template_ref,
+        prepared_templates,
+    )
+    return prepared_templates
+
+
 def _finalize_matches(
     matches: list[MatchedFilterMatch],
     *,
@@ -813,6 +870,47 @@ def _jax_template_bank_envelope(
     )
 
 
+def _jax_template_bank_envelope_matrix(
+    detection_flux: np.ndarray,
+    template_flux: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Return best score and in-batch template index for each curve/offset."""
+
+    global _JAX_TEMPLATE_BANK_ENVELOPE_MATRIX
+    os.environ.setdefault("XLA_PYTHON_CLIENT_PREALLOCATE", "false")
+    import jax
+
+    import jax.numpy as jnp
+    from jax import lax
+
+    if _JAX_TEMPLATE_BANK_ENVELOPE_MATRIX is None:
+
+        @jax.jit
+        def template_bank_envelope_matrix(signal_matrix, template_bank):
+            lhs = signal_matrix[:, :, None]
+            filters = jnp.swapaxes(template_bank, 0, 1)[:, None, :]
+            scores = lax.conv_general_dilated(
+                lhs,
+                filters,
+                window_strides=(1,),
+                padding="VALID",
+                dimension_numbers=("NWC", "WIO", "NWC"),
+            )
+            return jnp.max(scores, axis=2), jnp.argmax(scores, axis=2)
+
+        _JAX_TEMPLATE_BANK_ENVELOPE_MATRIX = template_bank_envelope_matrix
+
+    scores, template_indices = _JAX_TEMPLATE_BANK_ENVELOPE_MATRIX(
+        jnp.asarray(detection_flux, dtype=jnp.float32),
+        jnp.asarray(template_flux, dtype=jnp.float32),
+    )
+    scores, template_indices = jax.device_get((scores, template_indices))
+    return (
+        np.asarray(scores, dtype=float),
+        np.asarray(template_indices, dtype=int),
+    )
+
+
 def _template_bank_envelope(
     detection_flux: np.ndarray,
     template_flux: np.ndarray,
@@ -831,6 +929,28 @@ def _template_bank_envelope(
         np.max(matched_filter_outputs, axis=0),
         np.argmax(matched_filter_outputs, axis=0),
     )
+
+
+def _template_bank_envelope_matrix(
+    detection_flux: np.ndarray,
+    template_flux: np.ndarray,
+    *,
+    backend: str,
+) -> tuple[np.ndarray, np.ndarray]:
+    if backend == "jax":
+        return _jax_template_bank_envelope_matrix(detection_flux, template_flux)
+
+    curve_scores = []
+    curve_indices = []
+    for curve_flux in detection_flux:
+        scores, indices = _template_bank_envelope(
+            curve_flux,
+            template_flux,
+            backend=backend,
+        )
+        curve_scores.append(scores)
+        curve_indices.append(indices)
+    return np.vstack(curve_scores), np.vstack(curve_indices)
 
 
 def _correlate_valid_matrix(
@@ -1015,6 +1135,161 @@ def _detect_matched_filter_peaks_envelope(
         dedupe_overlaps=dedupe_overlaps,
         max_matches=max_matches,
     )
+
+
+def _detect_matched_filter_peaks_envelope_matrix(
+    time_array: np.ndarray,
+    search_flux: np.ndarray,
+    polarity_flux: np.ndarray,
+    min_center_flux: np.ndarray,
+    prepared_templates: list[_PreparedMatchedFilterTemplate],
+    *,
+    target_cadence: float,
+    prominence: float | None,
+    prominence_sigma: float,
+    height: float | None,
+    min_score_sigma: float | None,
+    distance: int | None,
+    dedupe_overlaps: bool,
+    max_matches: int | None,
+    template_batch_size: int,
+    backend: str,
+) -> list[list[MatchedFilterMatch]]:
+    curve_matches: list[list[MatchedFilterMatch]] = [
+        [] for _curve_index in range(search_flux.shape[0])
+    ]
+    templates_by_length: dict[int, list[_PreparedMatchedFilterTemplate]] = {}
+    for template in prepared_templates:
+        templates_by_length.setdefault(template.length, []).append(template)
+
+    for template_length, template_group in templates_by_length.items():
+        detection_time, detection_flux, pad_samples = _pad_search_matrix_for_template(
+            time_array,
+            search_flux,
+            template_length,
+            target_cadence,
+        )
+        detection_polarity_flux = _pad_polarity_matrix(polarity_flux, pad_samples)
+        output_len = len(detection_time) - template_length + 1
+        if output_len < 1:
+            continue
+
+        envelope_scores = np.full(
+            (search_flux.shape[0], output_len),
+            -np.inf,
+            dtype=float,
+        )
+        envelope_template_indices = np.full(
+            (search_flux.shape[0], output_len),
+            -1,
+            dtype=int,
+        )
+        for batch_start in range(0, len(template_group), template_batch_size):
+            batch_templates = template_group[
+                batch_start : batch_start + template_batch_size
+            ]
+            template_flux = np.asarray(
+                [template.flux for template in batch_templates],
+                dtype=np.float32 if backend == "jax" else float,
+            )
+            batch_scores, batch_template_indices = _template_bank_envelope_matrix(
+                detection_flux,
+                template_flux,
+                backend=backend,
+            )
+            improved = batch_scores > envelope_scores
+            envelope_scores[improved] = batch_scores[improved]
+            envelope_template_indices[improved] = (
+                batch_start + batch_template_indices[improved]
+            )
+
+        for curve_index in range(search_flux.shape[0]):
+            curve_envelope_scores = envelope_scores[curve_index]
+            finite_envelope = np.isfinite(curve_envelope_scores)
+            if not np.any(finite_envelope):
+                continue
+
+            envelope_for_threshold = curve_envelope_scores[finite_envelope]
+            peak_prominence = (
+                prominence
+                if prominence is not None
+                else _default_prominence(envelope_for_threshold, prominence_sigma)
+            )
+            peak_height = (
+                height
+                if height is not None or min_score_sigma is None
+                else _default_height(envelope_for_threshold, min_score_sigma)
+            )
+            peak_indices, properties = signal.find_peaks(
+                curve_envelope_scores,
+                prominence=peak_prominence,
+                height=peak_height,
+                distance=distance,
+            )
+            if len(peak_indices) == 0:
+                continue
+
+            peak_prominences = properties.get(
+                "prominences",
+                np.full(len(peak_indices), np.nan),
+            )
+            for peak_index, peak_prominence_value in zip(
+                peak_indices,
+                peak_prominences,
+            ):
+                template_group_index = int(
+                    envelope_template_indices[curve_index, peak_index]
+                )
+                if template_group_index < 0:
+                    continue
+                template = template_group[template_group_index]
+                detection_center_index = int(peak_index) + template.center
+                center_index = detection_center_index - pad_samples
+                if not _is_observed_peak(center_index, len(time_array)):
+                    continue
+                if (
+                    template.polarity_sign
+                    * detection_polarity_flux[curve_index, detection_center_index]
+                    < min_center_flux[curve_index]
+                ):
+                    continue
+
+                if (
+                    template.event_half_width is not None
+                    and np.isfinite(template.event_half_width)
+                    and template.event_half_width > 0
+                ):
+                    half_width = float(template.event_half_width)
+                else:
+                    half_width = 0.5 * (template.length - 1) * target_cadence
+                peak_time = float(detection_time[detection_center_index])
+                start_time = max(float(time_array[0]), peak_time - half_width)
+                end_time = min(float(time_array[-1]), peak_time + half_width)
+                start_index = int(np.searchsorted(time_array, start_time, side="left"))
+                end_index = int(np.searchsorted(time_array, end_time, side="right") - 1)
+
+                curve_matches[curve_index].append(
+                    MatchedFilterMatch(
+                        template_index=template.index,
+                        peak_index=center_index,
+                        start_index=max(0, start_index),
+                        end_index=min(len(time_array) - 1, end_index),
+                        peak_time=peak_time,
+                        start_time=start_time,
+                        end_time=end_time,
+                        score=float(curve_envelope_scores[peak_index]),
+                        prominence=float(peak_prominence_value),
+                    )
+                )
+
+    return [
+        _finalize_matches(
+            matches,
+            dedupe_overlaps=dedupe_overlaps,
+            max_matches=max_matches,
+        )
+        for matches in curve_matches
+    ]
 
 
 def detect_matched_filter_peaks(
@@ -1222,30 +1497,27 @@ def detect_matched_filter_peaks_batched(
     search_flux = flux_matrix - np.mean(flux_matrix, axis=1, keepdims=True)
     polarity_flux = flux_matrix - np.median(flux_matrix, axis=1, keepdims=True)
     min_center_flux = np.apply_along_axis(_minimum_center_flux, 1, polarity_flux)
-    prepared_templates = _prepare_envelope_templates(
+    prepared_templates = _cached_prepare_envelope_templates(
         templates,
         target_cadence,
         allow_negative_peaks=allow_negative_peaks,
     )
     template_batch_size = batch_size or DEFAULT_TEMPLATE_BATCH_SIZE
 
-    return [
-        _detect_matched_filter_peaks_envelope(
-            time_array,
-            search_flux[curve_index],
-            polarity_flux[curve_index],
-            float(min_center_flux[curve_index]),
-            prepared_templates,
-            target_cadence=target_cadence,
-            prominence=prominence,
-            prominence_sigma=prominence_sigma,
-            height=height,
-            min_score_sigma=min_score_sigma,
-            distance=distance,
-            dedupe_overlaps=dedupe_overlaps,
-            max_matches=max_matches,
-            template_batch_size=template_batch_size,
-            backend=resolved_backend,
-        )
-        for curve_index in range(search_flux.shape[0])
-    ]
+    return _detect_matched_filter_peaks_envelope_matrix(
+        time_array,
+        search_flux,
+        polarity_flux,
+        min_center_flux,
+        prepared_templates,
+        target_cadence=target_cadence,
+        prominence=prominence,
+        prominence_sigma=prominence_sigma,
+        height=height,
+        min_score_sigma=min_score_sigma,
+        distance=distance,
+        dedupe_overlaps=dedupe_overlaps,
+        max_matches=max_matches,
+        template_batch_size=template_batch_size,
+        backend=resolved_backend,
+    )
