@@ -101,7 +101,7 @@ def _source_provenance():
             return None
     source_hashes = {}
     for relative in ("searchlight/models/simulens/v1.py", "searchlight/models/simulens/training.py",
-                     "searchlight/lightcurves.py", "searchlight/utils.py", "bin/train_cnn.py", "uv.lock"):
+                     "searchlight/lightcurves.py", "searchlight/utils.py", "searchlight/generation.py", "bin/train_cnn.py", "uv.lock"):
         path = root / relative
         if path.is_file():
             with path.open("rb") as stream:
@@ -167,6 +167,16 @@ def train(trainer, path, *, seed, max_epochs, patience, min_delta, resume, overw
     if len(counts) < 2 or any(count < 2 for count in counts.values()):
         raise ValueError(f"Need at least two nonempty classes with two light curves each: {counts}")
     manifest = _dataset_manifest(dataset, root)
+    generated_path = root / "generation.json"
+    if generated_path.exists():
+        generated = json.loads(generated_path.read_text())
+        if generated.get("status") != "complete":
+            raise ValueError("Generated dataset is incomplete; finish generation before training")
+        expected = {entry["path"]: entry["sha256"] for entry in generated["files"]}
+        actual = {entry["path"]: entry["sha256"] for entry in manifest}
+        if expected != actual:
+            raise ValueError("Generated dataset no longer matches its generation manifest")
+        provenance = {"generation": generated, "user": provenance}
     settings = {
         "seed": seed, "patience": patience, "min_delta": min_delta,
         "split_sizes": [None if math.isinf(size) else size for size in _resolve_split_sizes(trainer.split_sizes)],

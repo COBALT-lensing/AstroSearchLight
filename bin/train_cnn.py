@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 
 from searchlight.models.simulens import SimuLens
+from searchlight import generation
 
 
 def main(argv=None):
@@ -29,11 +30,18 @@ def main(argv=None):
     parser.add_argument("--no-amp", action="store_true")
     parser.add_argument("--no-pretrained", action="store_true", help="Initialize randomly instead of using ImageNet weights")
     parser.add_argument("--dataset-provenance", type=Path, help="JSON describing dataset generation, ranges, seeds, and simulator revisions")
+    parser.add_argument("--generate-data", action="store_true",
+                        help="Create the dataset with the shared photometry generator before training")
+    generation.add_generation_arguments(parser)
     args = parser.parse_args(argv)
+    if args.generate_data and args.resume:
+        parser.error("--generate-data cannot be combined with --resume")
     if args.resume and args.init_checkpoint:
         parser.error("--resume and --init-checkpoint cannot be combined")
     if args.resume and args.overwrite:
         parser.error("--resume and --overwrite cannot be combined")
+    if args.generate_data:
+        generation.generate_from_args(args.dataset, args)
     provenance = json.loads(args.dataset_provenance.read_text()) if args.dataset_provenance else None
     trainer = SimuLens(output_dir=args.output_dir, device=args.device, lr=args.lr,
         scheduler_step_size=args.scheduler_step_size, scheduler_gamma=args.scheduler_gamma,

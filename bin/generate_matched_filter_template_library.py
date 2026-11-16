@@ -7,7 +7,6 @@ import argparse
 import contextlib
 import hashlib
 import io
-import itertools
 import json
 import os
 from multiprocessing import get_context
@@ -16,7 +15,6 @@ from pathlib import Path
 os.environ.setdefault("XLA_PYTHON_CLIENT_PREALLOCATE", "false")
 
 import numpy as np
-from astropy import units
 from tqdm import tqdm
 
 from searchlight.matched_filtering import (
@@ -25,6 +23,7 @@ from searchlight.matched_filtering import (
     detect_matched_filter_peaks,
     save_template_library,
 )
+from searchlight import generation
 from searchlight.paths import CACHE_PATH
 from searchlight.evaluation.provenance import dependency_provenance
 
@@ -42,25 +41,7 @@ PARAMETER_FIELDS = [
     ("b", "f8"),
     ("tau_eff", "f8"),
 ]
-DEFAULT_MAX_ECCENTRICITY = 0.999
-DEFAULT_COARSE_GRID = {
-    "a": [0.3, 1.0, 10.0, 100.0, 200.0],
-    "i": [0.5 * np.pi],
-    "Macc": [0.5, 1.0, 5.0, 20.0, 50.0],
-    "Mcomp": [0.5, 1.0, 5.0, 20.0, 50.0],
-    "e": [0.0, 0.3, 0.6, 0.9],
-    "periapsis_phase": [0.0, 0.5 * np.pi, np.pi, 1.5 * np.pi],
-    "d": [1.0],
-}
-DEFAULT_COMPLETENESS_GRID = {
-    "a": [0.1, 0.2, 0.5, 1.0, 3.0, 10.0, 30.0, 100.0, 200.0],
-    "i": [0.5 * np.pi - 1e-4, 0.5 * np.pi - 5e-5, 0.5 * np.pi],
-    "Macc": [0.5, 1.0, 2.0, 5.0, 10.0, 20.0, 50.0],
-    "Mcomp": [0.5, 1.0, 2.0, 5.0, 10.0, 20.0, 50.0],
-    "e": [0.0, 0.15, 0.35, 0.6, 0.8, 0.93, DEFAULT_MAX_ECCENTRICITY],
-    "periapsis_phase": list(np.linspace(0.0, 2 * np.pi, 8, endpoint=False)),
-    "d": [1.0],
-}
+DEFAULT_MAX_ECCENTRICITY = generation.DEFAULT_RANGES["e"][1]
 DEFAULT_CALIBRATION_THRESHOLD_GRID = [
     (3.0, 4.0),
     (2.5, 3.0),
@@ -68,137 +49,8 @@ DEFAULT_CALIBRATION_THRESHOLD_GRID = [
     (1.5, 1.0),
     (1.0, None),
 ]
-DEFAULT_FILTER_BATCH_SIZE = 65536
-DEFAULT_GENERATION_BATCH_SIZE = 512
+DEFAULT_GENERATION_BATCH_SIZE = generation.DEFAULT_BATCH_SIZE
 _VALIDATION_EVALUATOR_CONTEXT = None
-
-
-def _require_selflensing():
-    try:
-        from selflensing.batch import make_batched_light_curve_generator
-        from selflensing.models import DEFAULT_LIMITS, SelfLensingSystem
-    except ImportError as exc:
-        raise ImportError(
-            "Template generation requires py-self-lensing. Install it with "
-            "`uv sync --extra template-generation --all-groups` or add the "
-            "local py-self-lensing checkout to PYTHONPATH."
-        ) from exc
-
-    return make_batched_light_curve_generator, DEFAULT_LIMITS, SelfLensingSystem
-
-
-def _grid_values(lower, upper, count, *, distribution):
-    if count <= 0:
-        raise ValueError("grid counts must be positive")
-    if count == 1:
-        return np.asarray([(lower + upper) / 2], dtype=float)
-    if distribution == "log":
-        offset = 1 if lower == 0 else 0
-        values = np.geomspace(lower + offset, upper + offset, count) - offset
-    else:
-        values = np.linspace(lower, upper, count)
-    values[0] = lower
-    values[-1] = upper
-    return values
-
-
-def _values_from_csv(value):
-    if value is None:
-        return None
-    return [float(item) for item in value.split(",") if item.strip()]
-
-
-def build_parameter_grid(
-    *,
-    samples_per_parameter=None,
-    distance_samples=1,
-    include_distance=False,
-    max_eccentricity=DEFAULT_MAX_ECCENTRICITY,
-    grid_preset="coarse",
-    parameter_values=None,
-):
-    _, default_limits, _ = _require_selflensing()
-    if not 0 <= max_eccentricity < 1:
-        raise ValueError("max_eccentricity must be >= 0 and less than 1")
-
-    if grid_preset not in {"coarse", "completeness", "limits"}:
-        raise ValueError("grid_preset must be 'coarse', 'completeness', or 'limits'")
-
-    if parameter_values is None:
-        parameter_values = {}
-
-    if grid_preset in {"coarse", "completeness"}:
-        source_grid = (
-            DEFAULT_COMPLETENESS_GRID
-            if grid_preset == "completeness"
-            else DEFAULT_COARSE_GRID
-        )
-        values = {
-            name: list(grid_values)
-            for name, grid_values in source_grid.items()
-        }
-        if include_distance:
-            values["d"] = list(
-                _grid_values(
-                    float(default_limits["d"][0]),
-                    float(default_limits["d"][1]),
-                    distance_samples,
-                    distribution="log",
-                )
-            )
-    else:
-        if samples_per_parameter is None:
-            samples_per_parameter = 3
-        counts = {
-            "a": samples_per_parameter,
-            "i": samples_per_parameter,
-            "Macc": samples_per_parameter,
-            "Mcomp": samples_per_parameter,
-            "e": samples_per_parameter,
-            "periapsis_phase": samples_per_parameter,
-            "d": distance_samples if include_distance else 1,
-        }
-        log_parameters = {"a", "e", "Macc", "Mcomp", "d"}
-        values = {}
-        for name, count in counts.items():
-            lower, upper = default_limits[name]
-            if name == "d" and not include_distance:
-                lower = upper = 1.0
-            if name == "e":
-                upper = min(float(upper), max_eccentricity)
-            values[name] = list(
-                _grid_values(
-                    float(lower),
-                    float(upper),
-                    count,
-                    distribution="log" if name in log_parameters else "linear",
-                )
-            )
-
-    for name, explicit_values in parameter_values.items():
-        if explicit_values is not None:
-            values[name] = list(explicit_values)
-
-    values["e"] = [value for value in values["e"] if value <= max_eccentricity]
-    if not values["e"]:
-        raise ValueError("eccentricity grid is empty after applying max_eccentricity")
-
-    names = list(values)
-    for combo in itertools.product(*(values[name] for name in names)):
-        yield dict(zip(names, combo))
-
-
-def _system_from_params(params):
-    _, _, self_lensing_system = _require_selflensing()
-    return self_lensing_system(
-        a=params["a"] * units.AU,
-        i=params["i"] * units.rad,
-        Macc=params["Macc"] * units.M_sun,
-        Mcomp=params["Mcomp"] * units.M_sun,
-        e=params["e"] * units.dimensionless_unscaled,
-        periapsis_phase=params["periapsis_phase"] * units.rad,
-        d=params["d"] * units.kpc,
-    )
 
 
 def _parameter_row(params, derived):
@@ -209,45 +61,6 @@ def _parameter_row(params, derived):
     row["b"] = derived["b"]
     row["tau_eff"] = derived["tau_eff"]
     return row
-
-
-def _quantity_to_float(quantity, unit):
-    if hasattr(quantity, "to_value"):
-        value = quantity.to_value(unit)
-    elif hasattr(quantity, "to"):
-        value = quantity.to(unit).value
-    else:
-        value = quantity
-    return float(np.asarray(value).item())
-
-
-def _system_derived_values(system):
-    return {
-        "Porb": _quantity_to_float(system.porb, units.day),
-        "b": _quantity_to_float(system.b, units.dimensionless_unscaled),
-        "tau_eff": _quantity_to_float(system.tau_eff, units.day),
-        "Rcomp": _quantity_to_float(system.Rcomp, units.R_sun),
-        "Teff": _quantity_to_float(system.Teff, units.K),
-    }
-
-
-def _batched_light_curve_params(params, derived):
-    return {
-        "a": params["a"],
-        "i": params["i"],
-        "Macc": params["Macc"],
-        "Mcomp": params["Mcomp"],
-        "Rcomp": derived["Rcomp"],
-        "Teff": derived["Teff"],
-        "e": params["e"],
-        "periapsis_phase": params["periapsis_phase"],
-    }
-
-
-def _as_bool(value):
-    if hasattr(value, "value"):
-        value = value.value
-    return bool(np.asarray(value).item())
 
 
 def _is_valid_template_flux(flux, *, min_flux):
@@ -281,11 +94,6 @@ def _jax_devices_for_kind(kind):
         return []
 
 
-def _selflensing_generation_device():
-    devices = _jax_devices_for_kind("gpu")
-    return devices[0] if devices else None
-
-
 def _selflensing_generation_device_summary():
     gpu_devices = _jax_devices_for_kind("gpu")
     if gpu_devices:
@@ -300,146 +108,6 @@ def _selflensing_generation_device_summary():
     return "batched JAX light curves; unknown device, JAX devices unavailable"
 
 
-def _filter_batch_device_summary():
-    gpu_devices = _jax_devices_for_kind("gpu")
-    if gpu_devices:
-        return "batched JAX system filtering; GPU device(s): " + ", ".join(
-            str(device) for device in gpu_devices
-        )
-    cpu_devices = _jax_devices_for_kind("cpu")
-    if cpu_devices:
-        return "batched JAX system filtering; CPU fallback: " + ", ".join(
-            str(device) for device in cpu_devices
-        )
-    return "batched JAX system filtering; unknown device, JAX devices unavailable"
-
-
-def _grid_parameter_array(grid):
-    names = ("a", "i", "Macc", "Mcomp", "e", "periapsis_phase", "d")
-    return np.asarray([[params[name] for name in names] for params in grid], dtype=float)
-
-
-def _evaluate_filter_batch(params_array, *, allow_rlof):
-    import jax
-    import jax.numpy as jnp
-    from selflensing.gp.PhysicalRelations import (
-        effective_temperature_K,
-        stellar_radius_Rsun,
-    )
-    from selflensing.orbits import (
-        AU_M,
-        M_SUN_KG,
-        R_SUN_M,
-        crossing_time_days,
-        einstein_radius_m,
-        impact_parameter_source_radii,
-        orbital_period_days,
-        orbital_separation_m,
-    )
-
-    params_array = jnp.asarray(params_array)
-
-    def evaluate_one(row):
-        a, i, macc, mcomp, e, periapsis_phase, _ = row
-        a_m = a * AU_M
-        macc_kg = macc * M_SUN_KG
-        mcomp_kg = mcomp * M_SUN_KG
-        total_mass_kg = macc_kg + mcomp_kg
-        rcomp_rsun = stellar_radius_Rsun(mcomp)
-        rcomp_m = rcomp_rsun * R_SUN_M
-        teff = effective_temperature_K(mcomp)
-        sin_i = jnp.sin(i)
-        porb_days = orbital_period_days(a_m, total_mass_kg)
-
-        r_e_m = einstein_radius_m(a_m, sin_i, macc_kg, e, periapsis_phase)
-        projected = impact_parameter_source_radii(a_m, i, rcomp_m, e, periapsis_phase)*rcomp_m
-        b = projected/jnp.where(r_e_m > 0, r_e_m, 1.)
-        sl_possible = (r_e_m > 0) & (projected <= rcomp_m+r_e_m)
-
-        q = mcomp / macc
-        q23 = q ** (2.0 / 3.0)
-        separation_at_periapsis = orbital_separation_m(
-            periapsis_phase,
-            a_m,
-            e,
-            periapsis_phase,
-        )
-        r_roche = separation_at_periapsis * (
-            (0.49 * q23) / (0.6 * q23 + jnp.log(1 + q ** (1.0 / 3.0)))
-        )
-        rlof = r_roche <= rcomp_m
-
-        tau_eff_days = crossing_time_days(a_m, i, macc_kg, total_mass_kg,
-                                          rcomp_m, e, periapsis_phase)
-
-        finite = (
-            jnp.isfinite(porb_days)
-            & jnp.isfinite(b)
-            & jnp.isfinite(tau_eff_days)
-            & jnp.isfinite(rcomp_rsun)
-            & jnp.isfinite(teff)
-            & (r_e_m > 0)
-            & (rcomp_m > 0)
-            & (tau_eff_days > 0)
-        )
-        keep = finite & sl_possible
-        if not allow_rlof:
-            keep = keep & ~rlof
-        return keep, porb_days, b, tau_eff_days, rcomp_rsun, teff
-
-    return jax.jit(jax.vmap(evaluate_one))(params_array)
-
-
-def _filter_template_systems_batched(
-    grid,
-    *,
-    allow_rlof,
-    max_templates,
-    show_progress,
-    grid_preset,
-    batch_size=DEFAULT_FILTER_BATCH_SIZE,
-):
-    systems = []
-    progress = tqdm(
-        total=len(grid),
-        desc=f"Filtering {grid_preset} systems",
-        disable=not show_progress,
-        unit="system",
-    )
-    try:
-        for start in range(0, len(grid), batch_size):
-            chunk = grid[start : start + batch_size]
-            params_array = _grid_parameter_array(chunk)
-            keep, porb, b, tau_eff, rcomp, teff = _evaluate_filter_batch(
-                params_array,
-                allow_rlof=allow_rlof,
-            )
-            if hasattr(keep, "block_until_ready"):
-                keep.block_until_ready()
-            keep = np.asarray(keep, dtype=bool)
-            derived_columns = {
-                "Porb": np.asarray(porb, dtype=float),
-                "b": np.asarray(b, dtype=float),
-                "tau_eff": np.asarray(tau_eff, dtype=float),
-                "Rcomp": np.asarray(rcomp, dtype=float),
-                "Teff": np.asarray(teff, dtype=float),
-            }
-            for index, params in enumerate(chunk):
-                if not keep[index]:
-                    continue
-                derived = {
-                    name: float(values[index])
-                    for name, values in derived_columns.items()
-                }
-                systems.append((derived["tau_eff"], params, derived))
-                if max_templates is not None and len(systems) >= max_templates:
-                    return systems
-            progress.update(len(chunk))
-    finally:
-        progress.close()
-    return systems
-
-
 def _build_lightcurve_rows_batched(
     tasks,
     *,
@@ -448,73 +116,60 @@ def _build_lightcurve_rows_batched(
     desc,
     batch_size=DEFAULT_GENERATION_BATCH_SIZE,
 ):
-    make_batched_light_curve_generator, _, _ = _require_selflensing()
     batch_size = _normalise_workers(batch_size, "generation_batch_size")
-
-    curve_params = []
-    params_rows = []
-    for task in tasks:
-        params = task[0]
-        derived = task[1]
-        curve_params.append(_batched_light_curve_params(params, derived))
-        params_rows.append(_parameter_row(params, derived))
-
-    if not curve_params:
+    if not tasks:
         return [], [], 0
+    simulator = generation.LightCurveGenerator()
+    flux_rows, parameter_rows, skipped = [], [], 0
+    first = tasks[0]
+    for start in tqdm(range(0, len(tasks), batch_size), desc=desc, disable=not show_progress):
+        chunk = tasks[start:start + batch_size]
+        rows = {name: np.asarray([({**task[0], **task[1]})[name] for task in chunk])
+                for name in (*generation.PARAMETER_NAMES, *generation.DERIVED_NAMES)}
+        result = simulator.generate(rows, relative_time_days, peak_times=0.0, noisy=False,
+                                    sl=first[3], ev=first[4], db=first[5])
+        expected_shape = (len(chunk), len(relative_time_days))
+        if result.flux.shape != expected_shape:
+            raise ValueError(f"Shared generator returned {result.flux.shape}; expected {expected_shape}")
+        for flux, task in zip(result.flux, chunk):
+            if not _is_valid_template_flux(flux, min_flux=first[6]):
+                skipped += 1
+                continue
+            flux_rows.append(flux)
+            parameter_rows.append(_parameter_row(task[0], task[1]))
+    return flux_rows, parameter_rows, skipped
 
-    first_task = tasks[0]
-    generate = make_batched_light_curve_generator(
-        relative_time_days,
-        peak_times=0.0,
-        sl=first_task[3],
-        ev=first_task[4],
-        db=first_task[5],
-        device=_selflensing_generation_device(),
-    )
-    flux_rows = []
-    parameter_rows = []
-    skipped_invalid_flux = 0
 
-    progress = tqdm(
-        total=len(curve_params),
-        desc=desc,
-        disable=not show_progress,
-        unit="curve",
-    )
-    try:
-        for start in range(0, len(curve_params), batch_size):
-            params_chunk = curve_params[start : start + batch_size]
-            rows_chunk = params_rows[start : start + batch_size]
-            flux_array = generate(params_chunk)
-            if hasattr(flux_array, "block_until_ready"):
-                flux_array = flux_array.block_until_ready()
-            flux = np.asarray(flux_array, dtype=float)
-            expected_shape = (len(params_chunk), len(relative_time_days))
-            if flux.shape != expected_shape:
-                raise ValueError(
-                    "Batched selflensing generator returned flux with shape "
-                    f"{flux.shape}; expected {expected_shape}"
-                )
-            for flux_row, parameter_row in zip(flux, rows_chunk):
-                if not _is_valid_template_flux(flux_row, min_flux=first_task[6]):
-                    skipped_invalid_flux += 1
-                    continue
-                flux_rows.append(flux_row)
-                parameter_rows.append(parameter_row)
-            progress.update(len(params_chunk))
-    finally:
-        progress.close()
-    return flux_rows, parameter_rows, skipped_invalid_flux
+def _default_ranges(ranges, *, include_distance, max_eccentricity):
+    if not 0 <= max_eccentricity < 1:
+        raise ValueError("max_eccentricity must be >= 0 and less than 1")
+    bounds = generation.resolve_ranges(ranges)
+    bounds["e"] = (bounds["e"][0], min(bounds["e"][1], max_eccentricity))
+    if not include_distance:
+        bounds["d"] = (1., 1.)
+    return generation.resolve_ranges(bounds)
+
+
+def _sample_template_systems(count, seed, *, include_distance=True,
+                             max_eccentricity=DEFAULT_MAX_ECCENTRICITY,
+                             allow_rlof=False, ranges=None, max_attempts=None, return_attempts=False):
+    bounds = _default_ranges(ranges, include_distance=include_distance, max_eccentricity=max_eccentricity)
+    sampled = generation.sample_systems(count, np.random.default_rng(seed), ranges=bounds,
+        allow_rlof=allow_rlof, max_attempts=max_attempts, return_attempts=return_attempts)
+    rows, attempts = sampled if return_attempts else (sampled, None)
+    systems = [(float(rows["tau_eff"][index]),
+             {name: float(rows[name][index]) for name in generation.PARAMETER_NAMES},
+             {name: float(rows[name][index]) for name in generation.DERIVED_NAMES})
+            for index in range(count)]
+    return (systems, attempts) if return_attempts else systems
 
 
 def build_template_library(
     *,
-    samples_per_parameter=None,
-    cadence_minutes=120.0,
+    cadence_minutes=generation.DEFAULT_CADENCE_SECONDS / 60,
     half_window_days=None,
     window_scale=1.2,
-    include_distance=False,
-    distance_samples=1,
+    include_distance=True,
     max_templates=None,
     include_self_lensing=True,
     include_ellipsoidal_variations=True,
@@ -524,64 +179,41 @@ def build_template_library(
     allow_rlof=False,
     min_flux=0.0,
     generation_batch_size=DEFAULT_GENERATION_BATCH_SIZE,
-    grid_preset="coarse",
-    parameter_values=None,
+    grid_preset="default",
+    template_count=2000,
+    seed=generation.DEFAULT_SEED + 1,
+    ranges=None,
 ):
     generation_batch_size = _normalise_workers(
         generation_batch_size,
         "generation_batch_size",
     )
-    _status(f"Building {grid_preset!r} parameter grid...", enabled=show_progress)
-    grid = list(
-        build_parameter_grid(
-            samples_per_parameter=samples_per_parameter,
-            include_distance=include_distance,
-            distance_samples=distance_samples,
-            max_eccentricity=max_eccentricity,
-            grid_preset=grid_preset,
-            parameter_values=parameter_values,
-        )
-    )
-    _status(
-        f"Filtering {len(grid)} {grid_preset!r} grid systems for self-lensing "
-        "and Roche-lobe constraints...",
-        enabled=show_progress,
-    )
-    _status(
-        f"Self-lensing filter device for {grid_preset!r}: "
-        f"{_filter_batch_device_summary()}",
-        enabled=show_progress,
-    )
-    systems = _filter_template_systems_batched(
-        grid,
-        allow_rlof=allow_rlof,
-        max_templates=max_templates,
-        show_progress=show_progress,
-        grid_preset=grid_preset,
-    )
+    if grid_preset != "default":
+        raise ValueError("Only the default preset is supported")
+    count = min(template_count, max_templates) if max_templates is not None else template_count
+    systems, proposal_draws = _sample_template_systems(count, seed, include_distance=include_distance,
+        max_eccentricity=max_eccentricity, allow_rlof=allow_rlof, ranges=ranges, return_attempts=True)
 
     if not systems:
         raise RuntimeError("No self-lensing-capable systems were generated")
     _status(
-        f"{grid_preset!r} grid kept {len(systems)} of {len(grid)} systems.",
+        f"{grid_preset!r} proposal kept {len(systems)} of {proposal_draws} systems.",
         enabled=show_progress,
     )
 
     if half_window_days is None:
         _status(
-            f"Computing shared template window for {grid_preset!r} grid...",
+            "Computing shared template window...",
             enabled=show_progress,
         )
         max_tau_eff = max(tau_eff_days for tau_eff_days, _, _ in systems)
         half_window_days = max_tau_eff * window_scale
 
     cadence_days = cadence_minutes / (24 * 60)
-    relative_time_days = np.arange(
-        -half_window_days,
-        half_window_days + (0.5 * cadence_days),
-        cadence_days,
-        dtype=float,
-    )
+    if not np.isfinite([cadence_days, half_window_days]).all() or min(cadence_days, half_window_days) <= 0:
+        raise ValueError("Cadence and template half-window must be positive and finite")
+    half_samples = int(np.ceil(half_window_days / cadence_days))
+    relative_time_days = np.arange(-half_samples, half_samples + 1, dtype=float) * cadence_days
     tasks = [
         (
             params,
@@ -615,9 +247,7 @@ def build_template_library(
         "cadence_minutes": cadence_minutes,
         "half_window_days": half_window_days,
         "window_scale": window_scale,
-        "samples_per_parameter": samples_per_parameter,
         "include_distance": include_distance,
-        "distance_samples": distance_samples,
         "include_self_lensing": include_self_lensing,
         "include_ellipsoidal_variations": include_ellipsoidal_variations,
         "include_doppler_boosting": include_doppler_boosting,
@@ -626,16 +256,16 @@ def build_template_library(
         "min_flux": min_flux,
         "skipped_invalid_flux": skipped_invalid_flux,
         "filter_interface": "jax.vmap",
-        "filter_batch_size": DEFAULT_FILTER_BATCH_SIZE,
         "generation_batch_size": generation_batch_size,
-        "generation_interface": "selflensing.batch.make_batched_light_curve_generator",
+        "generation_interface": "selflensing.batch.batched_light_curve_jit",
+        "shared_generator": generation.generator_metadata(ranges=_default_ranges(ranges,
+            include_distance=include_distance, max_eccentricity=max_eccentricity)),
+        "seed": seed,
+        "template_count": template_count,
+        "noisy": False,
         "simulator_provenance": dependency_provenance("selflensing", "rustlens", "jaxoplanet"),
         "grid_preset": grid_preset,
-        "parameter_values": {
-            name: None if values is None else list(values)
-            for name, values in (parameter_values or {}).items()
-        },
-        "grid_size_before_filters": len(grid),
+        "grid_size_before_filters": proposal_draws,
         "grid_size_after_filters": len(systems),
     }
     return (
@@ -644,16 +274,6 @@ def build_template_library(
         np.asarray(parameter_rows, dtype=PARAMETER_FIELDS),
         metadata,
     )
-
-
-def _random_values(lower, upper, count, *, distribution, rng):
-    lower = float(lower)
-    upper = float(upper)
-    if distribution == "log":
-        if lower <= 0:
-            raise ValueError("log-distributed random values require a positive lower")
-        return np.exp(rng.uniform(np.log(lower), np.log(upper), count))
-    return rng.uniform(lower, upper, count)
 
 
 def _generate_validation_seed():
@@ -700,63 +320,14 @@ def _save_validation_cache(path, *, flux, time, parameters, metadata):
     )
 
 
-def sample_validation_parameters(
-    *,
-    sample_count=1000,
-    seed=None,
-    include_distance=False,
-    max_eccentricity=DEFAULT_MAX_ECCENTRICITY,
-    allow_rlof=False,
-    max_attempts=None,
-):
-    _, default_limits, _ = _require_selflensing()
-    if seed is None:
-        seed = _generate_validation_seed()
-    rng = np.random.default_rng(seed)
-    if max_attempts is None:
-        max_attempts = max(sample_count * 1000, 1000)
-
-    samples = []
-    attempts = 0
-    log_parameters = {"a", "Macc", "Mcomp", "d"}
-    while len(samples) < sample_count and attempts < max_attempts:
-        attempts += 1
-        params = {}
-        for name in ("a", "i", "Macc", "Mcomp", "e", "periapsis_phase", "d"):
-            lower, upper = default_limits[name]
-            if name == "d" and not include_distance:
-                params[name] = 1.0
-                continue
-            if name == "e":
-                upper = min(float(upper), max_eccentricity)
-            distribution = "log" if name in log_parameters else "linear"
-            params[name] = float(
-                _random_values(lower, upper, 1, distribution=distribution, rng=rng)[0]
-            )
-
-        system = _system_from_params(params)
-        if not _as_bool(system.sl_possible):
-            continue
-        if not allow_rlof and _as_bool(system.rlof):
-            continue
-        samples.append((system, params))
-
-    if len(samples) < sample_count:
-        raise RuntimeError(
-            f"Only generated {len(samples)} validation systems after "
-            f"{attempts} attempts"
-        )
-    return samples
-
-
 def _build_validation_lightcurves_uncached(
     *,
     sample_count=1000,
     seed,
-    cadence_minutes=120.0,
+    cadence_minutes=generation.DEFAULT_CADENCE_SECONDS / 60,
     half_window_days=None,
     window_scale=1.2,
-    include_distance=False,
+    include_distance=True,
     include_self_lensing=True,
     include_ellipsoidal_variations=True,
     include_doppler_boosting=True,
@@ -765,40 +336,40 @@ def _build_validation_lightcurves_uncached(
     allow_rlof=False,
     min_flux=0.0,
     generation_batch_size=DEFAULT_GENERATION_BATCH_SIZE,
+    ranges=None,
 ):
     generation_batch_size = _normalise_workers(
         generation_batch_size,
         "generation_batch_size",
     )
-    systems = sample_validation_parameters(
-        sample_count=sample_count,
+    systems = _sample_template_systems(
+        count=sample_count,
         seed=seed,
         include_distance=include_distance,
         max_eccentricity=max_eccentricity,
         allow_rlof=allow_rlof,
+        ranges=ranges,
     )
     if half_window_days is None:
-        max_tau_eff = max(_system_derived_values(system)["tau_eff"] for system, _ in systems)
+        max_tau_eff = max(derived["tau_eff"] for _, _, derived in systems)
         half_window_days = max_tau_eff * window_scale
 
     cadence_days = cadence_minutes / (24 * 60)
-    relative_time_days = np.arange(
-        -half_window_days,
-        half_window_days + (0.5 * cadence_days),
-        cadence_days,
-        dtype=float,
-    )
+    if not np.isfinite([cadence_days, half_window_days]).all() or min(cadence_days, half_window_days) <= 0:
+        raise ValueError("Cadence and template half-window must be positive and finite")
+    half_samples = int(np.ceil(half_window_days / cadence_days))
+    relative_time_days = np.arange(-half_samples, half_samples + 1, dtype=float) * cadence_days
     tasks = [
         (
             params,
-            _system_derived_values(system),
+            derived,
             relative_time_days,
             include_self_lensing,
             include_ellipsoidal_variations,
             include_doppler_boosting,
             min_flux,
         )
-        for system, params in systems
+        for _, params, derived in systems
     ]
     _status(
         "Self-lensing generation device for validation curves: "
@@ -828,7 +399,9 @@ def _build_validation_lightcurves_uncached(
         "min_flux": min_flux,
         "skipped_invalid_flux": skipped_invalid_flux,
         "generation_batch_size": generation_batch_size,
-        "generation_interface": "selflensing.batch.make_batched_light_curve_generator",
+        "generation_interface": "selflensing.batch.batched_light_curve_jit",
+        "shared_generator": generation.generator_metadata(ranges=_default_ranges(ranges,
+            include_distance=include_distance, max_eccentricity=max_eccentricity)),
         "simulator_provenance": dependency_provenance("selflensing", "rustlens", "jaxoplanet"),
     }
     return (
@@ -843,10 +416,10 @@ def build_validation_lightcurves(
     *,
     sample_count=1000,
     seed=None,
-    cadence_minutes=120.0,
+    cadence_minutes=generation.DEFAULT_CADENCE_SECONDS / 60,
     half_window_days=None,
     window_scale=1.2,
-    include_distance=False,
+    include_distance=True,
     include_self_lensing=True,
     include_ellipsoidal_variations=True,
     include_doppler_boosting=True,
@@ -857,6 +430,7 @@ def build_validation_lightcurves(
     use_cache=True,
     cache_dir=DEFAULT_VALIDATION_CACHE_DIR,
     generation_batch_size=DEFAULT_GENERATION_BATCH_SIZE,
+    ranges=None,
 ):
     if seed is None:
         seed = _generate_validation_seed()
@@ -874,7 +448,10 @@ def build_validation_lightcurves(
         "min_flux": min_flux,
         # Package versions alone do not distinguish the radius-conversion fix.
         "simulator_provenance": dependency_provenance("selflensing", "rustlens", "jaxoplanet"),
-        "cache_version": 4,
+        "cache_version": 5,
+        "seed": seed,
+        "shared_generator": generation.generator_metadata(ranges=_default_ranges(ranges,
+            include_distance=include_distance, max_eccentricity=max_eccentricity)),
     }
     cache_path = _validation_cache_path(cache_dir, cache_settings)
     if use_cache and cache_path.exists():
@@ -905,6 +482,7 @@ def build_validation_lightcurves(
         allow_rlof=allow_rlof,
         min_flux=min_flux,
         generation_batch_size=generation_batch_size,
+        ranges=ranges,
     )
     metadata = {
         **metadata,
@@ -1287,13 +865,10 @@ def calibrate_template_library(
     validation_size=1000,
     validation_seed=None,
     threshold_grid=None,
-    grid_presets=("coarse", "completeness"),
-    samples_per_parameter=None,
-    cadence_minutes=120.0,
+    cadence_minutes=generation.DEFAULT_CADENCE_SECONDS / 60,
     half_window_days=None,
     window_scale=1.2,
-    include_distance=False,
-    distance_samples=1,
+    include_distance=True,
     max_templates=None,
     include_self_lensing=True,
     include_ellipsoidal_variations=True,
@@ -1304,7 +879,6 @@ def calibrate_template_library(
     min_flux=0.0,
     workers=None,
     cpu_workers=None,
-    parameter_values=None,
     peak_tolerance_samples=2,
     use_validation_cache=True,
     validation_cache_dir=DEFAULT_VALIDATION_CACHE_DIR,
@@ -1312,7 +886,12 @@ def calibrate_template_library(
     validation_batch_size=32,
     validation_template_batch_size=512,
     generation_batch_size=DEFAULT_GENERATION_BATCH_SIZE,
+    template_count=2000,
+    template_seed=generation.DEFAULT_SEED + 1,
+    ranges=None,
 ):
+    if include_distance is None:
+        include_distance = True
     if workers is None:
         workers = _default_workers()
     if cpu_workers is None:
@@ -1342,6 +921,7 @@ def calibrate_template_library(
             include_doppler_boosting=include_doppler_boosting,
             show_progress=show_progress,
             max_eccentricity=max_eccentricity,
+            ranges=ranges,
             allow_rlof=allow_rlof,
             min_flux=min_flux,
             use_cache=use_validation_cache,
@@ -1360,112 +940,62 @@ def calibrate_template_library(
         enabled=show_progress,
     )
 
-    best = None
-    evaluations = []
-    if not grid_presets:
-        raise ValueError("At least one calibration grid preset is required")
-    total_grid_presets = len(grid_presets)
-    for grid_index, grid_preset in enumerate(grid_presets, start=1):
-        _status(
-            f"Calibration grid step {grid_index}/{total_grid_presets}: "
-            f"{grid_preset!r}",
-            enabled=show_progress,
-        )
-        flux, time, parameters, metadata = build_template_library(
-            samples_per_parameter=samples_per_parameter,
-            cadence_minutes=cadence_minutes,
-            half_window_days=half_window_days,
-            window_scale=window_scale,
-            include_distance=include_distance,
-            distance_samples=distance_samples,
-            max_templates=max_templates,
-            include_self_lensing=include_self_lensing,
-            include_ellipsoidal_variations=include_ellipsoidal_variations,
-            include_doppler_boosting=include_doppler_boosting,
-            show_progress=show_progress,
-            max_eccentricity=max_eccentricity,
-            allow_rlof=allow_rlof,
-            min_flux=min_flux,
-            generation_batch_size=generation_batch_size,
-            grid_preset=grid_preset,
-            parameter_values=parameter_values,
-        )
-        _status(
-            f"Generated {flux.shape[0]} templates for {grid_preset!r}; "
-            f"evaluating {len(threshold_grid)} threshold settings.",
-            enabled=show_progress,
-        )
-        for threshold_index, (prominence_sigma, min_score_sigma) in enumerate(
-            threshold_grid,
-            start=1,
-        ):
-            _status(
-                f"Threshold step {threshold_index}/{len(threshold_grid)} for "
-                f"{grid_preset!r}: prominence_sigma={prominence_sigma}, "
-                f"min_score_sigma={min_score_sigma}",
-                enabled=show_progress,
-            )
-            evaluation = evaluate_template_completeness(
-                validation_flux=validation_flux,
-                validation_time=validation_time,
-                template_flux=flux,
-                template_time=time,
-                prominence_sigma=prominence_sigma,
-                min_score_sigma=min_score_sigma,
-                peak_tolerance_samples=peak_tolerance_samples,
-                show_progress=show_progress,
-                print_recall=show_progress,
-                workers=cpu_workers,
-                backend=resolved_validation_backend,
-                batch_size=validation_batch_size,
-                template_batch_size=validation_template_batch_size,
-            )
-            evaluation["grid_preset"] = grid_preset
-            evaluation["templates"] = int(flux.shape[0])
-            evaluations.append(evaluation)
-            _status(
-                f"Completed {grid_preset!r} threshold step "
-                f"{threshold_index}/{len(threshold_grid)}: "
-                f"recall={100 * evaluation['recall']:.2f}% "
-                f"({evaluation['matched']}/{evaluation['total']} matched)",
-                enabled=show_progress,
-            )
-            if best is None or evaluation["recall"] > best["evaluation"]["recall"]:
-                best = {
-                    "flux": flux,
-                    "time": time,
-                    "parameters": parameters,
-                    "metadata": metadata,
-                    "evaluation": evaluation,
-                }
-            if evaluation["recall"] >= target_recall:
-                _status(
-                    f"Target recall reached with {grid_preset!r}: "
-                    f"{100 * evaluation['recall']:.2f}% >= "
-                    f"{100 * target_recall:.2f}%",
-                    enabled=show_progress,
-                )
-                metadata["calibration"] = {
-                    "target_recall": target_recall,
-                    "validation": validation_metadata,
-                    "selected": evaluation,
-                    "evaluations": evaluations,
-                }
-                return flux, time, parameters, metadata
-
-    _status(
-        f"Target recall was not reached. Selecting best result: "
-        f"{best['evaluation']['grid_preset']!r} at "
-        f"{100 * best['evaluation']['recall']:.2f}% recall.",
-        enabled=show_progress,
+    if not threshold_grid:
+        raise ValueError("At least one calibration threshold setting is required")
+    flux, time, parameters, metadata = build_template_library(
+        cadence_minutes=cadence_minutes,
+        half_window_days=half_window_days,
+        window_scale=window_scale,
+        include_distance=include_distance,
+        max_templates=max_templates,
+        include_self_lensing=include_self_lensing,
+        include_ellipsoidal_variations=include_ellipsoidal_variations,
+        include_doppler_boosting=include_doppler_boosting,
+        show_progress=show_progress,
+        max_eccentricity=max_eccentricity,
+        ranges=ranges,
+        allow_rlof=allow_rlof,
+        min_flux=min_flux,
+        generation_batch_size=generation_batch_size,
+        grid_preset="default",
+        template_count=template_count,
+        seed=template_seed,
     )
-    best["metadata"]["calibration"] = {
-        "target_recall": target_recall,
-        "validation": validation_metadata,
-        "selected": best["evaluation"],
-        "evaluations": evaluations,
+    _status(f"Generated {flux.shape[0]} templates; evaluating {len(threshold_grid)} threshold settings.",
+            enabled=show_progress)
+    evaluations = []
+    best = None
+    for index, (prominence_sigma, min_score_sigma) in enumerate(threshold_grid, start=1):
+        _status(f"Threshold step {index}/{len(threshold_grid)}: "
+                f"prominence_sigma={prominence_sigma}, min_score_sigma={min_score_sigma}",
+                enabled=show_progress)
+        evaluation = evaluate_template_completeness(
+            validation_flux=validation_flux, validation_time=validation_time,
+            template_flux=flux, template_time=time,
+            prominence_sigma=prominence_sigma, min_score_sigma=min_score_sigma,
+            peak_tolerance_samples=peak_tolerance_samples,
+            show_progress=show_progress, print_recall=show_progress,
+            workers=cpu_workers, backend=resolved_validation_backend,
+            batch_size=validation_batch_size, template_batch_size=validation_template_batch_size,
+        )
+        evaluation.update(grid_preset="default", templates=int(flux.shape[0]))
+        evaluations.append(evaluation)
+        _status(f"Completed threshold step {index}/{len(threshold_grid)}: "
+                f"recall={100 * evaluation['recall']:.2f}% "
+                f"({evaluation['matched']}/{evaluation['total']} matched)", enabled=show_progress)
+        if best is None or evaluation["recall"] > best["recall"]:
+            best = evaluation
+        if evaluation["recall"] >= target_recall:
+            _status(f"Target recall reached: {100 * evaluation['recall']:.2f}%", enabled=show_progress)
+            break
+    else:
+        _status(f"Target recall was not reached. Best recall: {100 * best['recall']:.2f}%",
+                enabled=show_progress)
+    metadata["calibration"] = {
+        "target_recall": target_recall, "validation": validation_metadata,
+        "selected": best, "evaluations": evaluations,
     }
-    return best["flux"], best["time"], best["parameters"], best["metadata"]
+    return flux, time, parameters, metadata
 
 
 def parse_args():
@@ -1480,23 +1010,15 @@ def parse_args():
         help=f"Output .npz path. Defaults to {DEFAULT_TEMPLATE_LIBRARY_PATH}.",
     )
     parser.add_argument(
-        "--samples-per-parameter",
-        type=int,
-        help=(
-            "Number of samples for a, i, Macc, Mcomp, e, and periapsis_phase "
-            "when --grid-preset limits is used."
-        ),
-    )
-    parser.add_argument(
         "--grid-preset",
-        choices=("coarse", "completeness", "limits"),
-        default="coarse",
-        help="Use the curated coarse grid or sample py-self-lensing DEFAULT_LIMITS.",
+        choices=("default",),
+        default="default",
+        help="Generate random physical-parameter draws with the default preset.",
     )
     parser.add_argument(
         "--calibrate-completeness",
         action="store_true",
-        help="Empirically choose a grid preset and thresholds on validation curves.",
+        help="Empirically choose thresholds on validation curves.",
     )
     parser.add_argument(
         "--target-recall",
@@ -1563,44 +1085,15 @@ def parse_args():
         ),
     )
     parser.add_argument(
-        "--calibration-grid-presets",
-        default="coarse,completeness",
-        help="Comma-separated grid presets to try during calibration.",
-    )
-    parser.add_argument(
         "--peak-tolerance-samples",
         type=int,
         default=2,
         help="Allowed offset from the injected event center when scoring recall.",
     )
     parser.add_argument(
-        "--a-values",
-        help="Comma-separated semi-major axis grid values in AU.",
-    )
-    parser.add_argument(
-        "--i-values",
-        help="Comma-separated inclination grid values in radians.",
-    )
-    parser.add_argument(
-        "--macc-values",
-        help="Comma-separated compact/accretor mass grid values in solar masses.",
-    )
-    parser.add_argument(
-        "--mcomp-values",
-        help="Comma-separated companion mass grid values in solar masses.",
-    )
-    parser.add_argument(
-        "--e-values",
-        help="Comma-separated eccentricity grid values.",
-    )
-    parser.add_argument(
-        "--periapsis-phase-values",
-        help="Comma-separated periapsis phase grid values in radians.",
-    )
-    parser.add_argument(
         "--cadence-minutes",
         type=float,
-        default=120.0,
+        default=generation.DEFAULT_CADENCE_SECONDS / 60,
         help="Shared template cadence in minutes.",
     )
     parser.add_argument(
@@ -1617,14 +1110,14 @@ def parse_args():
     parser.add_argument(
         "--include-distance",
         action="store_true",
-        help="Vary distance over the selflensing default range instead of fixing 1 kpc.",
+        default=True,
+        help="Sample distance over its configured range (enabled by default).",
     )
-    parser.add_argument(
-        "--distance-samples",
-        type=int,
-        default=1,
-        help="Number of distance samples when --include-distance is used.",
-    )
+    parser.add_argument("--fixed-distance", dest="include_distance", action="store_false",
+                        help="Fix distance at 1 kpc (otherwise sample the default distance range)")
+    parser.add_argument("--template-count", type=int, default=2000)
+    parser.add_argument("--template-seed", type=int, default=generation.DEFAULT_SEED + 1)
+    parser.add_argument("--ranges-json", type=Path, help="Custom physical ranges for the default proposal")
     parser.add_argument(
         "--max-templates",
         type=int,
@@ -1684,32 +1177,19 @@ def parse_args():
 
 def main():
     args = parse_args()
-    parameter_values = {
-        "a": _values_from_csv(args.a_values),
-        "i": _values_from_csv(args.i_values),
-        "Macc": _values_from_csv(args.macc_values),
-        "Mcomp": _values_from_csv(args.mcomp_values),
-        "e": _values_from_csv(args.e_values),
-        "periapsis_phase": _values_from_csv(args.periapsis_phase_values),
-    }
     cpu_workers = args.cpu_workers if args.cpu_workers is not None else args.workers
     if args.calibrate_completeness:
-        grid_presets = tuple(
-            item.strip()
-            for item in args.calibration_grid_presets.split(",")
-            if item.strip()
-        )
         flux, time, parameters, metadata = calibrate_template_library(
             target_recall=args.target_recall,
             validation_size=args.validation_size,
             validation_seed=args.validation_seed,
-            grid_presets=grid_presets,
-            samples_per_parameter=args.samples_per_parameter,
+            template_count=getattr(args, "template_count", 2000),
+            template_seed=getattr(args, "template_seed", generation.DEFAULT_SEED + 1),
+            ranges=json.loads(args.ranges_json.read_text()) if getattr(args, "ranges_json", None) else None,
             cadence_minutes=args.cadence_minutes,
             half_window_days=args.half_window_days,
             window_scale=args.window_scale,
             include_distance=args.include_distance,
-            distance_samples=args.distance_samples,
             max_templates=args.max_templates,
             include_self_lensing=not args.no_sl,
             include_ellipsoidal_variations=not args.no_ev,
@@ -1720,7 +1200,6 @@ def main():
             min_flux=args.min_flux,
             workers=args.workers,
             cpu_workers=cpu_workers,
-            parameter_values=parameter_values,
             peak_tolerance_samples=args.peak_tolerance_samples,
             use_validation_cache=not args.no_validation_cache,
             validation_cache_dir=args.validation_cache_dir,
@@ -1731,12 +1210,10 @@ def main():
         )
     else:
         flux, time, parameters, metadata = build_template_library(
-            samples_per_parameter=args.samples_per_parameter,
             cadence_minutes=args.cadence_minutes,
             half_window_days=args.half_window_days,
             window_scale=args.window_scale,
             include_distance=args.include_distance,
-            distance_samples=args.distance_samples,
             max_templates=args.max_templates,
             include_self_lensing=not args.no_sl,
             include_ellipsoidal_variations=not args.no_ev,
@@ -1747,7 +1224,9 @@ def main():
             min_flux=args.min_flux,
             generation_batch_size=args.generation_batch_size,
             grid_preset=args.grid_preset,
-            parameter_values=parameter_values,
+            template_count=getattr(args, "template_count", 2000),
+            seed=getattr(args, "template_seed", generation.DEFAULT_SEED + 1),
+            ranges=json.loads(args.ranges_json.read_text()) if getattr(args, "ranges_json", None) else None,
         )
     output = save_template_library(
         args.output,

@@ -16,213 +16,17 @@ def _load_generator_module():
     return module
 
 
-def test_build_template_library_uses_selflensing_grid(monkeypatch):
-    module = _load_generator_module()
+def _patch_shared_generator(monkeypatch, module, factory):
+    from types import SimpleNamespace
 
-    class FakeSystem:
-        param_units = {}
-
-        def __init__(self, a, i, Macc, Mcomp, e, periapsis_phase, d):
-            self.a_value = a.to_value(units.AU)
-            self.i_value = i.to_value(units.rad)
-            self.Macc_value = Macc.to_value(units.M_sun)
-            self.Mcomp_value = Mcomp.to_value(units.M_sun)
-            self.e_value = e.value
-            self.periapsis_phase_value = periapsis_phase.to_value(units.rad)
-            self.d_value = d.to_value(units.kpc)
-            self.sl_possible = self.a_value >= 1.0
-            self.rlof = self.Macc_value == 5.0
-            self.porb = (self.a_value + self.Macc_value) * units.day
-            self.b = type("ImpactParameter", (), {"value": 0.25})()
-            self.tau_eff = 2 * units.day
-            self.Rcomp = 1 * units.R_sun
-            self.Teff = 5800 * units.K
-
-    def fake_make_batched_light_curve_generator(times, **kwargs):
-        def generate(params):
-            rows = []
-            for row in params:
-                flux = 1 + times + row["a"]
-                if row["Mcomp"] == 20.0:
-                    flux = np.asarray([1.0, -1.0, 1.0])
-                rows.append(flux)
-            return np.vstack(rows)
-
-        return generate
-
-    def fake_filter_systems(grid, **kwargs):
-        systems = []
-        for params in grid:
-            system = FakeSystem(
-                a=params["a"] * units.AU,
-                i=params["i"] * units.rad,
-                Macc=params["Macc"] * units.M_sun,
-                Mcomp=params["Mcomp"] * units.M_sun,
-                e=params["e"] * units.dimensionless_unscaled,
-                periapsis_phase=params["periapsis_phase"] * units.rad,
-                d=params["d"] * units.kpc,
-            )
-            if not system.sl_possible or system.rlof:
-                continue
-            derived = {
-                "Porb": system.porb.to_value(units.day),
-                "b": system.b.value,
-                "tau_eff": system.tau_eff.to_value(units.day),
-                "Rcomp": system.Rcomp.to_value(units.R_sun),
-                "Teff": system.Teff.to_value(units.K),
-            }
-            systems.append((derived["tau_eff"], params, derived))
-        return systems
-
-    monkeypatch.setattr(
-        module,
-        "_require_selflensing",
-        lambda: (
-            fake_make_batched_light_curve_generator,
-            {
-                "a": (0.5, 2.0),
-                "i": (1.0, 1.1),
-                "Macc": (1.0, 4.0),
-                "Mcomp": (1.0, 4.0),
-                "e": (0.0, 0.5),
-                "periapsis_phase": (0.0, 1.0),
-                "d": (0.1, 10.0),
-            },
-            FakeSystem,
-        ),
-    )
-    monkeypatch.setattr(module, "_filter_template_systems_batched", fake_filter_systems)
-
-    flux, time, parameters, metadata = module.build_template_library(
-        samples_per_parameter=2,
-        cadence_minutes=24 * 60,
-        half_window_days=1,
-        include_doppler_boosting=False,
-    )
-
-    assert flux.shape[0] > 0
-    assert flux.shape[1] == 3
-    assert np.array_equal(time, [-1.0, 0.0, 1.0])
-    assert parameters.dtype.names == tuple(name for name, _ in module.PARAMETER_FIELDS)
-    assert np.all(parameters["a"] >= 1.0)
-    assert np.all(parameters["Macc"] != 5.0)
-    assert np.all(parameters["Mcomp"] != 20.0)
-    assert np.max(parameters["e"]) <= module.DEFAULT_MAX_ECCENTRICITY
-    assert metadata["include_doppler_boosting"] is False
-    assert metadata["max_eccentricity"] == module.DEFAULT_MAX_ECCENTRICITY
-    assert metadata["allow_rlof"] is False
-    assert metadata["min_flux"] == 0.0
-    assert metadata["skipped_invalid_flux"] > 0
-    assert metadata["filter_interface"] == "jax.vmap"
-    assert metadata["grid_preset"] == "coarse"
-    assert metadata["grid_size_before_filters"] == 2000
-
-
-def test_build_template_library_uses_batched_selflensing_generation(monkeypatch):
-    module = _load_generator_module()
-    calls = []
-
-    class FakeSystem:
-        param_units = {}
-
-        def __init__(self, a, i, Macc, Mcomp, e, periapsis_phase, d):
-            self.a_value = a.to_value(units.AU)
-            self.i_value = i.to_value(units.rad)
-            self.Macc_value = Macc.to_value(units.M_sun)
-            self.Mcomp_value = Mcomp.to_value(units.M_sun)
-            self.e_value = e.value
-            self.periapsis_phase_value = periapsis_phase.to_value(units.rad)
-            self.d_value = d.to_value(units.kpc)
-            self.sl_possible = True
-            self.rlof = False
-            self.porb = 1 * units.day
-            self.b = type("ImpactParameter", (), {"value": 0.25})()
-            self.tau_eff = 1 * units.day
-            self.Rcomp = 1 * units.R_sun
-            self.Teff = 5800 * units.K
-
-    def fake_make_batched_light_curve_generator(
-        times,
-        *,
-        peak_times,
-        sl,
-        ev,
-        db,
-        device,
-    ):
-        calls.append(
-            {
-                "samples": len(times),
-                "peak_times": peak_times,
-                "sl": sl,
-                "ev": ev,
-                "db": db,
-                "device": device,
-            }
-        )
-
-        def generate(params):
-            calls[-1]["systems"] = len(params)
-            return np.vstack([1 + row["a"] + times for row in params])
-
-        return generate
-
-    def fake_filter_systems(grid, **kwargs):
-        params = grid[0]
-        derived = {
-            "Porb": 1.0,
-            "b": 0.25,
-            "tau_eff": 1.0,
-            "Rcomp": 1.0,
-            "Teff": 5800.0,
-        }
-        return [(derived["tau_eff"], params, derived)]
-
-    monkeypatch.setattr(
-        module,
-        "_require_selflensing",
-        lambda: (
-            fake_make_batched_light_curve_generator,
-            {
-                "a": (1.0, 2.0),
-                "i": (1.0, 1.1),
-                "Macc": (1.0, 2.0),
-                "Mcomp": (1.0, 2.0),
-                "e": (0.0, 0.1),
-                "periapsis_phase": (0.0, 1.0),
-                "d": (1.0, 1.0),
-            },
-            FakeSystem,
-        ),
-    )
-    monkeypatch.setattr(module, "_filter_template_systems_batched", fake_filter_systems)
-
-    flux, time, _, metadata = module.build_template_library(
-        samples_per_parameter=1,
-        cadence_minutes=24 * 60,
-        half_window_days=1,
-        grid_preset="limits",
-        include_doppler_boosting=False,
-    )
-
-    assert calls == [
-        {
-            "systems": 1,
-            "samples": 3,
-            "peak_times": 0.0,
-            "sl": True,
-            "ev": True,
-            "db": False,
-            "device": None,
-        }
-    ]
-    assert np.array_equal(time, [-1.0, 0.0, 1.0])
-    assert np.allclose(flux, [[1.5, 2.5, 3.5]])
-    assert (
-        metadata["generation_interface"]
-        == "selflensing.batch.make_batched_light_curve_generator"
-    )
-    assert metadata["generation_batch_size"] == module.DEFAULT_GENERATION_BATCH_SIZE
+    class FakeGenerator:
+        def generate(self, rows, times, *, peak_times, noisy, sl, ev, db):
+            assert noisy is False
+            generate = factory(times, peak_times=peak_times, sl=sl, ev=ev, db=db, device=None)
+            params = [{name: values[index] for name, values in rows.items()}
+                      for index in range(len(rows["a"]))]
+            return SimpleNamespace(flux=generate(params))
+    monkeypatch.setattr(module.generation, "LightCurveGenerator", FakeGenerator)
 
 
 def test_batched_generation_uses_generation_batch_size(monkeypatch):
@@ -248,11 +52,7 @@ def test_batched_generation_uses_generation_batch_size(monkeypatch):
 
         return generate
 
-    monkeypatch.setattr(
-        module,
-        "_require_selflensing",
-        lambda: (fake_make_batched_light_curve_generator, {}, object),
-    )
+    _patch_shared_generator(monkeypatch, module, fake_make_batched_light_curve_generator)
 
     flux_rows, parameter_rows, skipped = module._build_lightcurve_rows_batched(
         tasks,
@@ -269,8 +69,8 @@ def test_batched_generation_uses_generation_batch_size(monkeypatch):
 
 
 def test_batched_filter_matches_selflensing_system_properties():
-    module = _load_generator_module()
-    pytest.importorskip("selflensing")
+    from searchlight import generation
+    from selflensing.models import SelfLensingSystem
     grid = [
         {
             "a": 10.0,
@@ -303,21 +103,23 @@ def test_batched_filter_matches_selflensing_system_properties():
 
     expected = []
     for params in grid:
-        system = module._system_from_params(params)
-        if not module._as_bool(system.sl_possible):
+        system = SelfLensingSystem(**{name: value * SelfLensingSystem.param_units[name]
+                                      for name, value in params.items()})
+        if not bool(system.sl_possible):
             continue
-        if module._as_bool(system.rlof):
+        if bool(system.rlof):
             continue
-        expected.append((params, module._system_derived_values(system)))
+        derived = {name: float(np.asarray(getattr(system, attr).to_value(unit)))
+                   for name, attr, unit in (("Porb", "porb", units.day),
+                       ("b", "b", units.dimensionless_unscaled), ("tau_eff", "tau_eff", units.day),
+                       ("Rcomp", "Rcomp", units.R_sun), ("Teff", "Teff", units.K))}
+        expected.append((params, derived))
 
-    result = module._filter_template_systems_batched(
-        grid,
-        allow_rlof=False,
-        max_templates=None,
-        show_progress=False,
-        grid_preset="test",
-        batch_size=2,
-    )
+    rows = {name: np.asarray([params[name] for params in grid]) for name in generation.PARAMETER_NAMES}
+    keep, derived = generation.evaluate_parameter_rows(rows)
+    result = [(derived["tau_eff"][index], grid[index],
+               {name: derived[name][index] for name in generation.DERIVED_NAMES})
+              for index in np.flatnonzero(keep)]
 
     assert [params for _, params, _ in result] == [params for params, _ in expected]
     for (_, _, derived), (_, expected_derived) in zip(result, expected):
@@ -325,41 +127,11 @@ def test_batched_filter_matches_selflensing_system_properties():
             assert np.isclose(derived[name], expected_derived[name], rtol=1e-10)
 
 
-def test_build_parameter_grid_rejects_parabolic_eccentricity(monkeypatch):
-    module = _load_generator_module()
-    monkeypatch.setattr(
-        module,
-        "_require_selflensing",
-        lambda: (
-            object,
-            {
-                "a": (0.5, 2.0),
-                "i": (1.0, 1.1),
-                "Macc": (1.0, 4.0),
-                "Mcomp": (1.0, 4.0),
-                "e": (0.0, 0.999999),
-                "periapsis_phase": (0.0, 1.0),
-                "d": (0.1, 10.0),
-            },
-            object,
-        ),
-    )
-
-    with pytest.raises(ValueError, match="less than 1"):
-        list(module.build_parameter_grid(max_eccentricity=1.0))
-
-    grid = list(
-        module.build_parameter_grid(samples_per_parameter=3, grid_preset="limits")
-    )
-    assert np.isclose(
-        max(params["e"] for params in grid),
-        module.DEFAULT_MAX_ECCENTRICITY,
-    )
-
-
 def test_generator_main_writes_default_library(monkeypatch, tmp_path, capsys):
     module = _load_generator_module()
     output = tmp_path / "templates.npz"
+    ranges = tmp_path / "ranges.json"
+    ranges.write_text('{"a": [5, 20], "e": [0, 0.5]}')
     monkeypatch.setattr(
         module,
         "parse_args",
@@ -368,26 +140,18 @@ def test_generator_main_writes_default_library(monkeypatch, tmp_path, capsys):
             (),
             {
                 "output": output,
-                "samples_per_parameter": 1,
-                "grid_preset": "coarse",
+                "grid_preset": "default",
+                "ranges_json": ranges,
                 "calibrate_completeness": False,
                 "target_recall": 0.9,
                 "validation_size": 1000,
                 "validation_seed": 42,
                 "generation_batch_size": 128,
-                "calibration_grid_presets": "coarse,completeness",
                 "peak_tolerance_samples": 2,
-                "a_values": "5,20",
-                "i_values": None,
-                "macc_values": None,
-                "mcomp_values": None,
-                "e_values": "0,0.5",
-                "periapsis_phase_values": None,
                 "cadence_minutes": 60,
                 "half_window_days": 1,
                 "window_scale": 1.2,
                 "include_distance": False,
-                "distance_samples": 1,
                 "max_templates": None,
                 "max_eccentricity": 0.99,
                 "allow_rlof": False,
@@ -429,37 +193,9 @@ def test_generator_main_writes_default_library(monkeypatch, tmp_path, capsys):
     assert library.metadata["min_flux"] == 0.0
     assert library.metadata["filter_interface"] == "jax.vmap"
     assert library.metadata["generation_batch_size"] == 128
-    assert library.metadata["parameter_values"]["a"] == [5.0, 20.0]
-    assert library.metadata["parameter_values"]["e"] == [0.0, 0.5]
+    assert library.metadata["ranges"]["a"] == [5.0, 20.0]
+    assert library.metadata["ranges"]["e"] == [0.0, 0.5]
     assert '"templates": 1' in capsys.readouterr().out
-
-
-def test_build_parameter_grid_accepts_completeness_preset(monkeypatch):
-    module = _load_generator_module()
-    monkeypatch.setattr(
-        module,
-        "_require_selflensing",
-        lambda: (
-            object,
-            {
-                "a": (0.1, 200.0),
-                "i": (1.5706963267948966, 1.5707963267948966),
-                "Macc": (0.5, 50.0),
-                "Mcomp": (0.5, 50.0),
-                "e": (0.0, 0.999999),
-                "periapsis_phase": (0.0, 2 * np.pi),
-                "d": (0.1, 100.0),
-            },
-            object,
-        ),
-    )
-
-    grid = module.build_parameter_grid(grid_preset="completeness")
-    first = next(grid)
-
-    assert first["a"] == 0.1
-    assert np.isclose(first["i"], 0.5 * np.pi - 1e-4)
-    assert first["e"] == 0.0
 
 
 def test_selflensing_generation_summary_names_batched_jax(monkeypatch):
@@ -590,7 +326,6 @@ def test_calibrate_template_library_records_selected_threshold(monkeypatch):
         target_recall=1.0,
         validation_size=2,
         threshold_grid=[(100.0, 100.0), (0.1, None)],
-        grid_presets=("coarse",),
         workers=1,
     )
 
@@ -666,7 +401,6 @@ def test_calibrate_template_library_uses_cpu_workers_for_evaluation(monkeypatch)
         target_recall=1.0,
         validation_size=1,
         threshold_grid=[(0.1, None)],
-        grid_presets=("coarse",),
         workers=8,
         cpu_workers=6,
     )
@@ -723,7 +457,6 @@ def test_calibrate_template_library_generates_seed_when_omitted(monkeypatch):
         target_recall=1.0,
         validation_size=1,
         threshold_grid=[(0.1, None)],
-        grid_presets=("coarse",),
         workers=1,
     )
 
@@ -731,7 +464,7 @@ def test_calibrate_template_library_generates_seed_when_omitted(monkeypatch):
     assert metadata["calibration"]["validation"]["seed"] == 123456
 
 
-def test_validation_cache_ignores_seed_in_cache_key(monkeypatch, tmp_path):
+def test_validation_cache_honors_seed_in_cache_key(monkeypatch, tmp_path):
     module = _load_generator_module()
     calls = []
 
@@ -772,11 +505,15 @@ def test_validation_cache_ignores_seed_in_cache_key(monkeypatch, tmp_path):
         cache_dir=tmp_path,
     )
 
-    assert calls == [111]
+    assert calls == [111, 222]
     assert first[3]["cache_hit"] is False
-    assert second[3]["cache_hit"] is True
-    assert second[3]["seed"] == 111
+    assert second[3]["cache_hit"] is False
+    assert second[3]["seed"] == 222
     assert np.array_equal(second[0], [[1.0, 1.1, 1.0]])
+
+    reused = module.build_validation_lightcurves(sample_count=1, seed=222, cache_dir=tmp_path)
+    assert reused[3]["cache_hit"] is True
+    assert calls == [111, 222]
 
 
 def test_validation_cache_invalidates_when_simulator_commit_changes(monkeypatch, tmp_path):
@@ -794,7 +531,7 @@ def test_validation_cache_invalidates_when_simulator_commit_changes(monkeypatch,
     old = module.build_validation_lightcurves(sample_count=1, seed=111, cache_dir=tmp_path)
     identity["selflensing"] = {"version": "0.0.1", "commit_id": "after-fix"}
     fixed = module.build_validation_lightcurves(sample_count=1, seed=222, cache_dir=tmp_path)
-    reused = module.build_validation_lightcurves(sample_count=1, seed=333, cache_dir=tmp_path)
+    reused = module.build_validation_lightcurves(sample_count=1, seed=222, cache_dir=tmp_path)
     assert calls == [111, 222]
     assert old[3]["cache_path"] != fixed[3]["cache_path"]
     assert not fixed[3]["cache_hit"]
@@ -848,3 +585,108 @@ def test_validation_cache_can_be_disabled(monkeypatch, tmp_path):
 
     assert calls == [111, 222]
     assert not list(tmp_path.glob("*.npz"))
+
+
+def test_default_templates_use_shared_proposal_and_zero_center(monkeypatch):
+    module = _load_generator_module()
+    observed = {}
+    def sample(count, rng, **kwargs):
+        observed.update(count=count, ranges=kwargs["ranges"])
+        rows = {name: np.full(count, value) for name, value in {
+            "a": 10., "i": np.pi/2, "Macc": 5., "Mcomp": 1., "e": 0.,
+            "periapsis_phase": 0., "d": 3., "Porb": 100., "b": 0.,
+            "tau_eff": .1, "Rcomp": 1., "Teff": 5800.}.items()}
+        return (rows, 1024) if kwargs.get("return_attempts") else rows
+    monkeypatch.setattr(module.generation, "sample_systems", sample)
+    # Exercise the real shared deterministic forward model.
+    flux, time, parameters, metadata = module.build_template_library(template_count=2, seed=15)
+    assert observed["count"] == 2
+    assert observed["ranges"] == module.generation.DEFAULT_RANGES
+    assert metadata["grid_preset"] == "default"
+    assert metadata["cadence_minutes"] == 10.
+    assert metadata["noisy"] is False
+    assert metadata["shared_generator"]["sampling_distributions"]["Mcomp"] == "uniform"
+    assert 0. in time
+    assert np.all(parameters["d"] == 3.)
+    assert flux.shape == (2, len(time))
+    np.testing.assert_allclose(np.diff(time), 600 / 86400)
+
+
+def test_validation_uses_same_shared_proposal_and_custom_ranges(monkeypatch):
+    module = _load_generator_module()
+    calls = []
+    original = module.generation.sample_systems
+    def sample(*args, **kwargs):
+        calls.append(kwargs["ranges"])
+        return original(*args, **kwargs)
+    monkeypatch.setattr(module.generation, "sample_systems", sample)
+    ranges = {"i": [np.pi/2, np.pi/2], "a": [10,10], "Macc": [5,5],
+              "Mcomp": [1,1], "d": [.1,.1], "e": [0,0]}
+    flux, time, params, metadata = module.build_validation_lightcurves(sample_count=2, seed=17,
+        ranges=ranges, half_window_days=.1, use_cache=False)
+    assert calls[0]["Mcomp"] == (1.,1.)
+    assert np.all(params["d"] == .1)
+    assert metadata["shared_generator"]["ranges"]["d"] == (.1,.1)
+    assert 0 in time
+    assert flux.shape == (2,len(time))
+
+
+def test_build_template_library_skips_invalid_flux(monkeypatch):
+    module = _load_generator_module()
+    systems = [(1., {"a": float(index + 1), "i": np.pi/2, "Macc": 5., "Mcomp": 1.,
+                      "e": 0., "periapsis_phase": 0., "d": 1.},
+                {"Porb": 100., "b": 0., "tau_eff": 1., "Rcomp": 1., "Teff": 5800.})
+               for index in range(3)]
+    monkeypatch.setattr(module, "_sample_template_systems", lambda *args, **kwargs: (systems, 1024))
+    def factory(times, **kwargs):
+        assert kwargs["db"] is False
+        def forward(rows):
+            return np.asarray([np.full(len(times), -1. if row["a"] == 2. else 1.) for row in rows])
+        return forward
+    _patch_shared_generator(monkeypatch, module, factory)
+    flux, time, parameters, metadata = module.build_template_library(template_count=3,
+        cadence_minutes=1440, half_window_days=1, include_doppler_boosting=False)
+    assert flux.shape == (2, 3)
+    assert parameters["a"].tolist() == [1., 3.]
+    assert metadata["skipped_invalid_flux"] == 1
+    assert metadata["grid_size_before_filters"] == 1024
+    assert metadata["grid_size_after_filters"] == 3
+    assert metadata["include_doppler_boosting"] is False
+    assert metadata["grid_preset"] == "default"
+
+
+@pytest.mark.parametrize("preset", ["coarse", "completeness", "limits"])
+def test_removed_grid_presets_are_rejected_by_api_and_cli(monkeypatch, preset):
+    import sys
+    module = _load_generator_module()
+    with pytest.raises(ValueError, match="Only the default preset"):
+        module.build_template_library(grid_preset=preset)
+    monkeypatch.setattr(sys, "argv", ["generate_templates", "--grid-preset", preset])
+    with pytest.raises(SystemExit):
+        module.parse_args()
+
+
+def test_calibration_builds_one_bank_and_selects_best_below_target(monkeypatch):
+    module = _load_generator_module()
+    builds = []
+    monkeypatch.setattr(module, "build_validation_lightcurves", lambda **kwargs: (
+        np.ones((4, 3)), np.arange(3.), None, {"seed": kwargs["seed"]}))
+    def build(**kwargs):
+        builds.append(kwargs)
+        return np.ones((2, 3)), np.arange(3.), None, {"grid_preset": "default"}
+    monkeypatch.setattr(module, "build_template_library", build)
+    recalls = iter([.25, .5, .25])
+    def evaluate(**kwargs):
+        recall = next(recalls)
+        return {"recall": recall, "matched": int(4 * recall), "total": 4,
+                "prominence_sigma": kwargs["prominence_sigma"],
+                "min_score_sigma": kwargs["min_score_sigma"]}
+    monkeypatch.setattr(module, "evaluate_template_completeness", evaluate)
+    _, _, _, metadata = module.calibrate_template_library(target_recall=.9,
+        validation_size=4, validation_seed=123, threshold_grid=[(3, 4), (2, 3), (1, 2)],
+        workers=1, validation_backend="cpu")
+    assert len(builds) == 1
+    assert builds[0]["grid_preset"] == "default"
+    assert len(metadata["calibration"]["evaluations"]) == 3
+    assert metadata["calibration"]["selected"]["recall"] == .5
+    assert metadata["calibration"]["selected"]["prominence_sigma"] == 2

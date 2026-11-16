@@ -11,7 +11,7 @@ uv sync --locked --extra template-generation --extra evaluation
 python bin/evaluate_pipeline.py examples/evaluation/simple.json
 ```
 
-For the larger manuscript-range experiment using the fixed production template
+For the larger parameter-range experiment using the fixed production template
 bank, run `.venv/bin/python bin/evaluate_pipeline.py examples/evaluation/full.json`.
 See the evaluation guide for sample counts and scope.
 
@@ -42,43 +42,39 @@ default. Install its private self-lensing dependency with:
 uv sync --extra template-generation --all-groups
 ```
 
-By default, the generator uses a broad, rounded `coarse` grid over semi-major
-axis, component masses, eccentricity, and periapsis phase, then filters out
-systems that are not self-lensing-capable or are in Roche-lobe overflow using a
-batched JAX filter. Use `--grid-preset completeness` for a denser hand-curated
-grid designed to cover a wider range of event morphologies, or `--grid-preset
-limits` to sample the upstream `py-self-lensing` parameter limits instead.
-Generated curves use `py-self-lensing`'s batched JAX light-curve interface.
+The `default` preset draws 2,000 viable systems with the shared photometry
+parameter ranges and distributions, then generates noiseless templates at
+10-minute cadence. Configure `--template-count`, `--template-seed`, or
+`--ranges-json`. Generation uses the shared batched JAX simulator.
+See [shared generation](docs/generation.md) for ranges, noise, and CNN datasets.
 
 ### Completeness calibration
 
-For recall-first searches, the template generator can empirically choose a
-template grid and matched-filter thresholds against a held-out validation set:
+For recall-first searches, the template generator can empirically choose
+matched-filter thresholds against a held-out validation set:
 
 ```shell
 uv run python bin/generate_matched_filter_template_library.py \
   --calibrate-completeness \
   --validation-size 1000 \
-  --target-recall 0.9 \
-  --calibration-grid-presets coarse,completeness
+  --target-recall 0.9
 ```
 
 Calibration works by drawing random self-lensing-capable systems from the
-`py-self-lensing` parameter limits, generating validation light curves centered
-on their lensing events, then trying template-grid presets and increasingly
-permissive threshold pairs until the requested recall is reached. A validation
-curve counts as matched when one of the returned detections lands within
+shared photometry proposal, generating validation light curves centered
+on their lensing events, then trying increasingly permissive threshold pairs
+against a single generated template bank until the requested recall is reached.
+A validation curve counts as matched when one of the returned detections lands within
 `--peak-tolerance-samples` of the injected event center. The selected settings
 and all attempted evaluations are stored in the output library metadata under
 `calibration`. While progress output is enabled, the validation progress bar
 updates its recall percentage after each curve is evaluated. The script also
-prints which calibration grid and threshold step it is running. Before template
-generation starts for a grid, it filters candidate systems for self-lensing and
-Roche-lobe constraints; for dense grids this can be a noticeable stage, so it
-has its own progress bar. Validation curves are cached by default in
+prints which threshold step it is running. Candidate systems are filtered for
+self-lensing and Roche-lobe constraints before their light curves are generated.
+Validation curves are cached by default in
 `~/.astrosearchlight/cache/matched_filter_validation_cache` and reused for later
 runs with the same validation-generation settings. The random seed is recorded
-in the cached metadata but is not part of the cache key. Validation evaluation
+in the cached metadata and included in the cache key. Validation evaluation
 can run through the original CPU detector or a batched JAX backend. The default
 `auto` mode uses JAX only when JAX reports a GPU device; otherwise it stays on
 the CPU path.
@@ -86,14 +82,12 @@ the CPU path.
 Useful calibration options:
 
 - `--calibrate-completeness`: enable the empirical validation loop. Without this,
-  the script just writes the requested grid preset.
+  the script writes templates from the default sampler.
 - `--validation-size N`: number of held-out light curves to generate. The default
   is `1000`; smaller values are useful for smoke tests.
 - `--validation-seed N`: random seed for the held-out systems. If omitted, the
   script generates a non-deterministic seed and records it in the output
-  metadata. Validation caching ignores the seed when looking up an existing
-  cache entry, so use `--no-validation-cache` when you need a fresh validation
-  set for the same generation settings.
+  metadata. A changed seed creates an independent validation set and cache entry.
 - `--no-validation-cache`: disable reading and writing cached validation light
   curves.
 - `--validation-cache-dir PATH`: directory for cached validation light curves.
@@ -111,20 +105,12 @@ Useful calibration options:
   generating the template library.
 - `--target-recall X`: stop once validation recall reaches this value. The
   default is `0.9`.
-- `--calibration-grid-presets A,B`: comma-separated grid presets to try in order.
-  The default is `coarse,completeness`; use
-  `--calibration-grid-presets completeness` to skip the coarse step.
 - `--peak-tolerance-samples N`: maximum sample offset between a detected peak and
   the injected event center for the validation curve to count as recovered.
 - `--max-templates N`: cap the number of generated templates. This is mainly for
-  quick calibration smoke tests; leaving it unset gives the calibration loop the
-  full grid.
-- `--samples-per-parameter N`: granularity for `--grid-preset limits`; fixed
-  presets such as `coarse` and `completeness` use their curated values unless
-  explicit `--a-values`, `--e-values`, etc. are supplied.
-- `--include-distance` and `--distance-samples N`: include distance as a grid
-  dimension. Distance mostly changes amplitude, so it is fixed at `1 kpc` by
-  default.
+  quick calibration smoke tests; `--template-count` sets the requested bank size.
+- `--ranges-json FILE`: override physical parameter bounds for templates and validation.
+- `--fixed-distance`: fix the default proposal at 1 kpc instead of sampling distance.
 - `--cpu-workers N`: worker processes for CPU validation evaluation.
 - `--workers N`: compatibility alias for `--cpu-workers` when `--cpu-workers` is
   not set.
@@ -135,7 +121,6 @@ CPU fallback evaluation:
 ```shell
 uv run python bin/generate_matched_filter_template_library.py \
   --calibrate-completeness \
-  --calibration-grid-presets completeness \
   --validation-backend jax \
   --cpu-workers 12
 ```
@@ -184,6 +169,15 @@ Trained on simulated TESS data:
 - (Self-)Lensing: 10,297
 - Stellar flares: 10,043
 - Not-lensing (including transits): 9,012
+
+Generate new CNN data with the shared photometry simulator (TESSGP noise by default):
+
+```sh
+uv run python bin/generate_training_data.py /path/to/new-dataset --count-per-class 10000
+```
+
+Use `--noiseless` for deterministic curves. The three existing classes are retained.
+See [generation settings](docs/generation.md) for physical ranges and sampling.
 
 To train on an updated FITS dataset, use an explicit run directory:
 

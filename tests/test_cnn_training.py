@@ -271,3 +271,22 @@ def test_overwrite_does_not_leave_old_resume_checkpoint_on_failure(setup_trainin
         trainer.train(root, max_epochs=1, overwrite=True)
     assert not (trainer.MODEL_SAVE_PATH.parent / "training_checkpoint.pth").exists()
     assert not trainer.MODEL_SAVE_PATH.exists()
+
+
+def test_generated_dataset_provenance_is_loaded_and_verified(setup_training):
+    import hashlib
+    root, make_trainer = setup_training
+    entries = [{"path": str(path.relative_to(root)), "sha256": hashlib.sha256(path.read_bytes()).hexdigest()}
+               for path in sorted(root.rglob("*.fits"))]
+    generated = {"generator": "photometry-batch-v1", "status": "complete", "files": entries}
+    (root / "generation.json").write_text(json.dumps(generated))
+    trainer = make_trainer("generated")
+    run = trainer.train(root, max_epochs=1)
+    assert run["dataset_provenance"]["generation"] == generated
+    (root / "lensing/0.fits").write_text("changed since generation")
+    with pytest.raises(ValueError, match="generation manifest"):
+        make_trainer("changed-generated").train(root, max_epochs=1)
+    generated["status"] = "generating"
+    (root / "generation.json").write_text(json.dumps(generated))
+    with pytest.raises(ValueError, match="incomplete"):
+        make_trainer("incomplete-generated").train(root, max_epochs=1)
