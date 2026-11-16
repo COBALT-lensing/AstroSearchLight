@@ -111,3 +111,37 @@ def test_dataset_versions_follow_the_same_default_precedence(monkeypatch):
     config.config_path().write_text('{"dataset_version":"3.0"}')
     assert config.dataset_directory() == paths.DATA_PATH / "datasets/simulens/3.0"
     assert config.dataset_directory("4.0") == paths.DATA_PATH / "datasets/simulens/4.0"
+
+
+def test_migrate_datasets_preserves_training_validation_and_new_versions():
+    legacy = paths.DATA_PATH / "simulations"
+    for version in ("1.0", "1.0-validation"):
+        directory = legacy / version / "lensing"
+        directory.mkdir(parents=True)
+        (directory / "curve.fits.gz").write_bytes(version.encode())
+    current = config.dataset_directory("2.0")
+    current.mkdir(parents=True)
+    (current / "keep.txt").write_text("new data")
+    moved = config.migrate_legacy_datasets()
+    assert set(moved) == {config.dataset_directory("1.0"), config.validation_dataset_directory("1.0")}
+    assert (config.dataset_directory("1.0") / "lensing/curve.fits.gz").read_bytes() == b"1.0"
+    assert (config.validation_dataset_directory("1.0") / "lensing/curve.fits.gz").read_bytes() == b"1.0-validation"
+    assert (current / "keep.txt").read_text() == "new data"
+    assert not legacy.exists()
+    assert config.migrate_legacy_datasets() == []
+
+
+def test_dataset_migration_preflights_all_versions_before_moving():
+    legacy = paths.DATA_PATH / "simulations"
+    for version in ("1.0", "1.0-validation"):
+        (legacy / version).mkdir(parents=True)
+        (legacy / version / "old.fits").write_text("old")
+    collision = config.validation_dataset_directory("1.0")
+    collision.mkdir(parents=True)
+    (collision / "existing.fits").write_text("keep")
+    with pytest.raises(FileExistsError, match="refusing to merge"):
+        config.migrate_legacy_datasets()
+    assert (legacy / "1.0/old.fits").read_text() == "old"
+    assert (legacy / "1.0-validation/old.fits").read_text() == "old"
+    assert not config.dataset_directory("1.0").exists()
+    assert (collision / "existing.fits").read_text() == "keep"

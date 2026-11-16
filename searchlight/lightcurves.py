@@ -5,7 +5,6 @@ import warnings
 import logging
 
 import numpy
-from pathlib import Path
 from urllib.error import URLError
 import urllib.parse
 
@@ -27,13 +26,11 @@ from lightkurve import search_lightcurve
 from lightkurve.io.tess import read_tess_lightcurve
 
 from .utils import cache
+from . import config
 
-LC_DATA_PATH = Path("/Users/adam/Code/lc-simulator/data")
-if not LC_DATA_PATH.exists():
-    LC_DATA_PATH = Path("/home/anm1u24/Code/lc-simulator/data")
-LC_VALIDATION_PATH = Path("/Users/adam/Code/lc-simulator/data.validation")
-if not LC_VALIDATION_PATH.exists():
-    LC_VALIDATION_PATH = Path("/home/anm1u24/Code/lc-simulator/data.validation")
+# Compatibility aliases for analysis notebooks and the deprecated trainers.
+LC_DATA_PATH = config.dataset_directory()
+LC_VALIDATION_PATH = config.validation_dataset_directory()
 logger = logging.getLogger(__name__)
 
 

@@ -12,6 +12,10 @@ such as `"1.0"` or `"2.1"`. The library resolves their locations:
       flare/
       not-lensing/
       generation.json
+    1.0-validation/
+      lensing/
+      flare/
+      not-lensing/
     2.0/
       lensing/
       flare/
@@ -33,7 +37,11 @@ such as `"1.0"` or `"2.1"`. The library resolves their locations:
 ```
 
 The existing unversioned template bank has been moved into the `1.0` directory.
-The CNN's existing `1.0` directory is preserved. Generation and training do not
+Historical CNN data from `simulations/1.0` and `simulations/1.0-validation`
+now lives in `datasets/simulens/1.0` and `datasets/simulens/1.0-validation`.
+The validation directory is a sibling of the training directory, keeping its
+curves out of the training class discovery. The CNN's existing `1.0` model
+directory is preserved. Generation and training do not
 activate a new version automatically.
 
 ## Choosing defaults
@@ -118,7 +126,10 @@ default version selections.
 The Python equivalents are `generate_cnn_dataset("2.0")` and
 `SimuLens(version="3.0").train(dataset_version="2.0")`. Existing external or
 historical datasets can be placed under their own version directory with the
-class-folder layout above; they are not moved automatically by this change.
+class-folder layout above. `config.validation_dataset_directory("1.0")` resolves
+the separately preserved historical validation set. Compatibility aliases
+`lightcurves.LC_DATA_PATH` and `LC_VALIDATION_PATH` use these configured paths;
+restart notebooks after changing the selected version.
 
 After evaluating the new artifacts, change the constants or configuration file
 to select them. Roll back by selecting the previous versions.
@@ -128,7 +139,9 @@ Use a numeric string to pin an experiment or `null` to use the configured defaul
 Saved experiment snapshots retain resolved paths and hashes for reproducibility;
 historical run configurations with those paths remain readable.
 
-For another installation with an old unversioned bank, run
+For another installation with an old unversioned bank or datasets under
+`simulations/`, run
 `uv run python -m searchlight.config` once. This creates the configuration file
-if absent and moves the legacy bank to `1.0`, refusing to overwrite different
-existing contents. Repeating it is safe.
+if absent, moves the legacy bank to `1.0`, and migrates historical dataset
+version directories into `datasets/simulens/`. Dataset migration preflights all
+destinations and refuses to merge with existing versions. Repeating it is safe.

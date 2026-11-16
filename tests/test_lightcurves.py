@@ -139,3 +139,14 @@ def test_load_tess_retries_restores_stdout_cleans_metadata(monkeypatch):
     assert cleaned.meta["TICID"] == 123
     assert cleaned.meta["RA"] == 10.5
     assert np.allclose(cleaned["flux"], [3.0, 4.0])
+
+
+def test_compatibility_dataset_paths_follow_version_configuration(monkeypatch):
+    import importlib
+    from searchlight import config
+    config.initialize_config()
+    config.config_path().write_text('{"dataset_version":"3.0"}')
+    importlib.reload(lightcurves)
+    assert lightcurves.LC_DATA_PATH == config.dataset_directory("3.0")
+    assert lightcurves.LC_VALIDATION_PATH == config.validation_dataset_directory("3.0")
+    assert lightcurves.LC_VALIDATION_PATH.parent == lightcurves.LC_DATA_PATH.parent

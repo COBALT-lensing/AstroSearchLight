@@ -53,6 +53,12 @@ def dataset_directory(version=None):
     return paths.DATA_PATH / "datasets" / "simulens" / resolve_version("dataset", version)
 
 
+def validation_dataset_directory(version=None):
+    """Location of a separately generated historical validation set."""
+    directory = dataset_directory(version)
+    return directory.with_name(f"{directory.name}-validation")
+
+
 def template_library_path(version=None):
     return paths.DATA_PATH / "templates" / "matched_filter" / resolve_version("template", version) / "templates.npz"
 
@@ -114,6 +120,44 @@ def migrate_legacy_templates():
     return destination
 
 
+def migrate_legacy_datasets():
+    """Move historical version directories into datasets/simulens without merging."""
+    legacy = paths.DATA_PATH / "simulations"
+    if not legacy.exists():
+        return []
+    moves = []
+    for source in sorted(legacy.iterdir()):
+        if not source.is_dir():
+            continue  # Preserve unrelated files in the legacy directory.
+        version = source.name.removesuffix("-validation")
+        validate_version(version)
+        destination = (validation_dataset_directory(version) if source.name.endswith("-validation")
+                       else dataset_directory(version))
+        if destination.exists() or destination.is_symlink():
+            raise FileExistsError(f"Dataset destination already exists; refusing to merge: {destination}")
+        moves.append((source, destination))
+    # Preflight all destinations before moving any version. A same-filesystem
+    # directory rename preserves file contents and avoids copying large datasets.
+    for source, destination in moves:
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        if source.stat().st_dev != destination.parent.stat().st_dev:
+            raise ValueError("Dataset migration requires source and destination on the same filesystem")
+    for source, destination in moves:
+        destination.mkdir()  # Reserve the name exclusively, including against concurrent generation.
+        try:
+            source.rename(destination)
+        except OSError:
+            try:
+                destination.rmdir()  # Remove only our empty reservation, never another process's files.
+            except OSError:
+                pass
+            raise
+    if not any(legacy.iterdir()):
+        legacy.rmdir()
+    return [destination for _, destination in moves]
+
+
 if __name__ == "__main__":
     print(f"Configuration: {initialize_config()}")
     print(f"Legacy template bank: {migrate_legacy_templates()}")
+    print(f"Legacy datasets: {migrate_legacy_datasets()}")
