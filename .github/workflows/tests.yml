@@ -6,6 +6,10 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+    env:
+      JAX_PLATFORMS: cpu
+      JAX_ENABLE_X64: "true"
+      MPLBACKEND: Agg
 
     steps:
       - name: Check out repository
@@ -21,8 +25,14 @@ jobs:
         with:
           enable-cache: true
 
+      - name: Use HTTPS for the public selflensing dependency
+        run: git config --global url."https://github.com/COBALT-lensing/py-self-lensing.git".insteadOf "ssh://git@github.com/COBALT-lensing/py-self-lensing.git"
+
       - name: Install dependencies
-        run: uv sync --locked --all-groups
+        run: uv sync --locked --all-groups --extra evaluation --extra template-generation
+
+      - name: Verify physics dependencies
+        run: uv run --no-sync python -c "import selflensing, rustlens, jaxoplanet"
 
       - name: Run tests
-        run: uv run pytest
+        run: uv run --no-sync pytest

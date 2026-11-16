@@ -46,6 +46,7 @@ def test_tail_shortcut_skips_only_bounded_offdisc_evaluations(monkeypatch):
 
 
 def test_rv_manuscript_proposal_is_seeded_and_within_paper_ranges():
+    pytest.importorskip('selflensing')
     first, second = np.random.default_rng(97), np.random.default_rng(97)
     for _ in range(10):
         p = sample_rv_system(first, proposal='rv_manuscript')
