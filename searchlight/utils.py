@@ -1,5 +1,6 @@
 import functools
 import hashlib
+import inspect
 import logging
 import os
 from pathlib import Path
@@ -16,8 +17,11 @@ logger = logging.getLogger(__name__)
 CACHE_ENABLED = os.environ.get("CACHE_ENABLED", "true").lower() == "true"
 
 
-def cache(func):
-    """Decorator for caching function results to disk."""
+def cache(func=None, *, file_args=()):
+    """Cache results, optionally invalidating when named local files change."""
+    if func is None:
+        return lambda wrapped: cache(wrapped, file_args=file_args)
+    signature = inspect.signature(func) if file_args else None
 
     def _is_hashable(value):
         try:
@@ -38,6 +42,19 @@ def cache(func):
             value = kwargs[key]
             if _is_hashable(value):
                 hash_parts.append(("kwarg", key, type(value).__qualname__, repr(value)))
+
+        if file_args:
+            bound = signature.bind(*args, **kwargs)
+            bound.apply_defaults()
+            for name in file_args:
+                value = bound.arguments[name]
+                # Remote MAST/HTTP curves have no local file metadata.
+                if "://" in str(value) or str(value).startswith("mast:"):
+                    continue
+                path = Path(value).expanduser().resolve()
+                stat = path.stat()
+                hash_parts.append(("file", name, str(path), stat.st_size,
+                                   stat.st_mtime_ns, stat.st_ctime_ns, stat.st_ino))
 
         p_hash = hashlib.md5(repr(tuple(hash_parts)).encode()).hexdigest()
         cache_file = (

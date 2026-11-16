@@ -37,12 +37,12 @@ def plot_to_rgb(f):
     return im
 
 
-@cache
+@cache(file_args=("path",))
 def load_fits(path):
     return plot_to_rgb(plot(load(path)))
 
 
-@cache
+@cache(file_args=("path",))
 def load_fits_segment(path, relative_start_days, relative_end_days):
     lc = load(path)
     segment = _segment_lightcurve(lc, relative_start_days, relative_end_days)
@@ -400,7 +400,6 @@ class LightcurvePathsDataSet(Dataset):
 class SimuLens(object):
     MODEL_SAVE_PATH = DATA_PATH / "models" / "simulens" / "1.0" / "model_weights.pth"
     STOPPING_PATIENCE = 5
-    STOPPING_SIGMA = 5
     LOADER_BATCH_SIZE = 8
     # Limit loader workers to 4, or less if there are fewer CPUs
     LOADER_WORKERS = min(4, os.cpu_count() or 1)
@@ -420,12 +419,16 @@ class SimuLens(object):
         loader_prefetch_factor=None,
         max_segments_per_item=None,
         use_amp=True,
+        output_dir=None,
+        pretrained=True,
     ):
-        self.MODEL_SAVE_PATH.parent.mkdir(parents=True, exist_ok=True)
+        if output_dir is not None:
+            self.MODEL_SAVE_PATH = Path(output_dir).expanduser().resolve() / "model_weights.pth"
+        self.pretrained = pretrained
         self.CLASS_SAVE_PATH = self.MODEL_SAVE_PATH.parent / "model_classes.json"
         self.split_sizes = split_sizes
         if device is not None:
-            self.device = device
+            self.device = torch.device(device)
         else:
             self.device = torch.device(
                 "cuda"
@@ -485,12 +488,13 @@ class SimuLens(object):
             return self.model.module
         return self.model
 
-    def _set_model(self, num_classes):
+    def _set_model(self, num_classes, *, reset=False):
         num_classes = int(num_classes)
-        if self.num_classes == num_classes and hasattr(self, "model"):
+        if not reset and self.num_classes == num_classes and hasattr(self, "model"):
             return
 
-        base_model = SegmentAwareResNet(num_classes=num_classes).to(self.device)
+        model_kwargs = {} if self.pretrained else {"weights": None}
+        base_model = SegmentAwareResNet(num_classes=num_classes, **model_kwargs).to(self.device)
         if self.device.type == "cuda" and torch.cuda.device_count() > 1:
             self.model = torch.nn.DataParallel(base_model)
         else:
@@ -507,9 +511,10 @@ class SimuLens(object):
             gamma=self.scheduler_gamma,
         )
 
-    def _build_dataloader(self, dataset, shuffle):
+    def _build_dataloader(self, dataset, shuffle, generator=None):
         kwargs = {
             "dataset": dataset,
+            "generator": generator,
             "batch_size": self.loader_batch_size,
             "shuffle": shuffle,
             "num_workers": self.loader_workers,
@@ -539,105 +544,14 @@ class SimuLens(object):
 
         raise RuntimeError("Could not load model weights into SegmentAwareResNet")
 
-    def train(self, path):
-        self.train_dataset = GroupedLightcurveFolderDataSet(
-            root=path,
-            transform=self.transform,
-            split_sizes=self.split_sizes,
-            max_segments_per_item=self.max_segments_per_item,
-        )
+    def train(self, path, *, seed=42, max_epochs=100, patience=5,
+              min_delta=0.0, resume=None, overwrite=False, provenance=None,
+              init_checkpoint=None):
+        from .training import train
 
-        self.classes = self.train_dataset.classes
-        self._set_model(len(self.classes))
-        self._reset_optimizer_and_scheduler()
-
-        # Split the dataset into training and testing sets (80% train, 20% test)
-        train_size = int(0.8 * len(self.train_dataset))
-        test_size = len(self.train_dataset) - train_size
-        self.train_dataset, self.test_dataset = torch.utils.data.random_split(
-            self.train_dataset, [train_size, test_size]
-        )
-
-        train_loader = self._build_dataloader(self.train_dataset, shuffle=True)
-        test_loader = self._build_dataloader(self.test_dataset, shuffle=False)
-
-        self.model.train()  # Set the model to training mode
-
-        accuracies = []
-        validation_losses = []
-        training_losses = []
-
-        final_weights = None
-
-        # Training loop
-        epoch = 0
-        while True:
-            training_loss = 0.0
-            validation_loss = 0.0
-            correct = 0
-            total = 0
-
-            epoch += 1
-
-            for inputs, mask, labels in tqdm(train_loader, desc="Train", leave=False):
-                inputs = inputs.to(self.device, non_blocking=self.pin_memory)
-                mask = mask.to(self.device, non_blocking=self.pin_memory)
-                labels = labels.to(self.device, non_blocking=self.pin_memory)
-
-                # Zero the parameter gradients
-                self.optimizer.zero_grad(set_to_none=True)
-
-                # Forward pass
-                with torch.amp.autocast("cuda", enabled=self.use_amp):
-                    outputs = self.model(inputs, mask)
-                    loss = self.criterion(outputs, labels)
-                training_loss += loss.item()
-
-                # Backward pass and optimization
-                self.grad_scaler.scale(loss).backward()
-                self.grad_scaler.step(self.optimizer)
-                self.grad_scaler.update()
-
-            for inputs, mask, labels in tqdm(test_loader, desc="Test", leave=False):
-                inputs = inputs.to(self.device, non_blocking=self.pin_memory)
-                mask = mask.to(self.device, non_blocking=self.pin_memory)
-                labels = labels.to(self.device, non_blocking=self.pin_memory)
-                with torch.no_grad():
-                    with torch.amp.autocast("cuda", enabled=self.use_amp):
-                        outputs = self.model(inputs, mask)
-                        loss = self.criterion(outputs, labels)
-                validation_loss += loss.item()
-
-                _, predicted = torch.max(outputs.data, 1)
-                total += labels.size(0)
-                correct += (predicted == labels).sum().item()
-
-            self.scheduler.step()
-
-            training_losses.append(training_loss)
-            validation_losses.append(validation_loss)
-
-            accuracies.append(100 * correct / total)
-            # accuracies = accuracies[-self.STOPPING_PATIENCE :]
-            validation_sigma = numpy.std(validation_losses[-self.STOPPING_PATIENCE :])
-
-            print(
-                f"Epoch [{epoch}], Training Loss: {training_loss:.4f}, "
-                f"Validation Loss: {validation_loss:.4f}, "
-                f"Accuracy: {accuracies[-1]:.2f}%, Validation std: {validation_sigma:.2f}"
-            )
-            if (
-                len(validation_losses) >= self.STOPPING_PATIENCE
-                and validation_sigma <= self.STOPPING_SIGMA
-                and validation_losses[-1] > validation_losses[-2]
-            ):
-                break
-            else:
-                final_weights = self._unwrap_model().state_dict()
-
-        torch.save(final_weights, self.MODEL_SAVE_PATH)
-        with open(self.CLASS_SAVE_PATH, "w") as class_f:
-            json.dump(self.classes, class_f)
+        return train(self, path, seed=seed, max_epochs=max_epochs, patience=patience,
+                     min_delta=min_delta, resume=resume, overwrite=overwrite,
+                     provenance=provenance, init_checkpoint=init_checkpoint)
 
     def classify(self, dataset, label=None):
         with open(self.CLASS_SAVE_PATH, "r") as class_f:

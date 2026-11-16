@@ -185,6 +185,15 @@ Trained on simulated TESS data:
 - Stellar flares: 10,043
 - Not-lensing (including transits): 9,012
 
+To train on an updated FITS dataset, use an explicit run directory:
+
+```sh
+uv run python bin/train_cnn.py /path/to/dataset --output-dir /path/to/new-run
+```
+
+See [CNN training](docs/cnn-training.md) for validation, reproducibility,
+checkpoints/resume, and dataset provenance requirements.
+
 ### HandLens (planned)
 
 To be trained on manual (Zooniverse) labels of real light curves.

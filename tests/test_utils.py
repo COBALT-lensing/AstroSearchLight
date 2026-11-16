@@ -56,3 +56,19 @@ def test_cache_enabled_reads_environment_at_import(monkeypatch):
     finally:
         monkeypatch.delenv("CACHE_ENABLED", raising=False)
         importlib.reload(utils)
+
+
+def test_file_cache_preserves_remote_uri_support(tmp_path, monkeypatch):
+    monkeypatch.setattr(utils, "FUNC_CACHE_PATH", tmp_path)
+    monkeypatch.setattr(utils, "CACHE_ENABLED", True)
+    calls = []
+
+    @utils.cache(file_args=("path",))
+    def compute(path):
+        calls.append(path)
+        return "remote curve"
+
+    for path in ("mast:TESS/product/example.fits", "https://example.org/curve.fits"):
+        assert compute(path) == "remote curve"
+        assert compute(path) == "remote curve"
+    assert len(calls) == 2
