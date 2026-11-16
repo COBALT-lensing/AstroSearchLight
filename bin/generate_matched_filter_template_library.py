@@ -18,6 +18,7 @@ import numpy as np
 from tqdm import tqdm
 
 from searchlight.matched_filtering import (
+    DEFAULT_TEMPLATE_COUNT,
     MatchedFilterTemplateLibrary,
     detect_matched_filter_peaks,
     save_template_library,
@@ -179,7 +180,7 @@ def build_template_library(
     min_flux=0.0,
     generation_batch_size=DEFAULT_GENERATION_BATCH_SIZE,
     grid_preset="default",
-    template_count=2000,
+    template_count=DEFAULT_TEMPLATE_COUNT,
     seed=generation.DEFAULT_SEED + 1,
     ranges=None,
 ):
@@ -885,7 +886,7 @@ def calibrate_template_library(
     validation_batch_size=32,
     validation_template_batch_size=512,
     generation_batch_size=DEFAULT_GENERATION_BATCH_SIZE,
-    template_count=2000,
+    template_count=DEFAULT_TEMPLATE_COUNT,
     template_seed=generation.DEFAULT_SEED + 1,
     ranges=None,
 ):
@@ -1110,7 +1111,8 @@ def parse_args():
     )
     parser.add_argument("--fixed-distance", dest="include_distance", action="store_false",
                         help="Fix distance at 1 kpc (otherwise sample the default distance range)")
-    parser.add_argument("--template-count", type=int, default=2000)
+    parser.add_argument("--template-count", type=int, default=DEFAULT_TEMPLATE_COUNT,
+                        help=f"Number of templates (default: {DEFAULT_TEMPLATE_COUNT:,}).")
     parser.add_argument("--template-seed", type=int, default=generation.DEFAULT_SEED + 1)
     parser.add_argument("--ranges-json", type=Path, help="Custom physical ranges for the default proposal")
     parser.add_argument(
@@ -1180,7 +1182,7 @@ def main():
             target_recall=args.target_recall,
             validation_size=args.validation_size,
             validation_seed=args.validation_seed,
-            template_count=getattr(args, "template_count", 2000),
+            template_count=getattr(args, "template_count", DEFAULT_TEMPLATE_COUNT),
             template_seed=getattr(args, "template_seed", generation.DEFAULT_SEED + 1),
             ranges=json.loads(args.ranges_json.read_text()) if getattr(args, "ranges_json", None) else None,
             cadence_minutes=args.cadence_minutes,
@@ -1221,7 +1223,7 @@ def main():
             min_flux=args.min_flux,
             generation_batch_size=args.generation_batch_size,
             grid_preset=args.grid_preset,
-            template_count=getattr(args, "template_count", 2000),
+            template_count=getattr(args, "template_count", DEFAULT_TEMPLATE_COUNT),
             seed=getattr(args, "template_seed", generation.DEFAULT_SEED + 1),
             ranges=json.loads(args.ranges_json.read_text()) if getattr(args, "ranges_json", None) else None,
         )

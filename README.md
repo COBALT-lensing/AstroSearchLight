@@ -43,7 +43,7 @@ CNN datasets, models, and matched-filter banks use numeric artifact versions; se
 uv sync --extra template-generation --all-groups
 ```
 
-The `default` preset draws 2,000 viable systems with the shared photometry
+The `default` preset draws 50,000 viable systems with the shared photometry
 parameter ranges and distributions, then generates noiseless templates at
 10-minute cadence. Configure `--template-count`, `--template-seed`, or
 `--ranges-json`. Generation uses the shared batched JAX simulator.

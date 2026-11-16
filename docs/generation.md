@@ -120,14 +120,16 @@ changing batch size changes the stream of parameter and GP draws.
 
 ```sh
 uv run python bin/generate_matched_filter_template_library.py \
-  --template-count 2000 --template-seed 20260826 --version 2.0
+  --template-seed 20260826 --version 2.0
 ```
 
 The bank is written to `~/.astrosearchlight/templates/matched_filter/2.0/templates.npz`.
 Existing versions are protected unless `--overwrite` is supplied. See
 [artifact versions](artifact-versions.md) for selection and default configuration.
 
-The `default` preset draws viable systems using the same shared proposal.
+The `default` preset draws 50,000 viable systems using the same shared proposal.
+Change `--template-count` for an individual run; the shared default is
+`DEFAULT_TEMPLATE_COUNT` in `searchlight/matched_filtering.py`.
 Templates are **noiseless**, with all three physical components enabled, events
 centred at zero, and 10-minute cadence. The common time grid always includes zero;
 its half-width defaults to 1.2 times the largest crossing time. The CNN's
