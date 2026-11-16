@@ -5,7 +5,7 @@ It uses the `selflensing.batch.batched_light_curve_jit` forward model
 and `batched_gp_light_curve_jit` for optional TESSGP noise. The same physical
 sampling and batch generation serve CNN datasets and matched-filter templates.
 
-Install the private simulator and its packaged TESS response/noise data:
+Install the simulator and its packaged TESS response/noise data:
 
 ```sh
 uv sync --locked --extra template-generation

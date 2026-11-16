@@ -37,8 +37,7 @@ uv run python bin/generate_matched_filter_template_library.py --version 2.0
 
 The generator writes `~/.astrosearchlight/templates/matched_filter/<version>/templates.npz`.
 CNN datasets, models, and matched-filter banks use numeric artifact versions; see
-[artifact versions and defaults](docs/artifact-versions.md). Install the private
-self-lensing dependency with:
+[artifact versions and defaults](docs/artifact-versions.md). Install the self-lensing dependency with:
 
 ```shell
 uv sync --extra template-generation --all-groups

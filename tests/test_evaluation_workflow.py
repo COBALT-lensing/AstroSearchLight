@@ -206,7 +206,7 @@ class DependencyMetadataTests(unittest.TestCase):
             identities = []
             for revision in ("commit-a", "commit-b"):
                 distribution.read_text.return_value = json.dumps({
-                    "url": "ssh://git@github.com/COBALT-lensing/py-self-lensing.git",
+                    "url": "https://github.com/COBALT-lensing/py-self-lensing.git",
                     "vcs_info": {"vcs": "git", "commit_id": revision}})
                 identities.append(dependency_provenance("selflensing")["selflensing"])
         self.assertEqual(identities[0]["version"], identities[1]["version"])
