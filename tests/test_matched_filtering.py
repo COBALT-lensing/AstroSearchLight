@@ -15,6 +15,8 @@ from searchlight.matched_filtering import (
     detect_matched_filter_peaks,
     detect_matched_filter_peaks_batched,
     load_template_library,
+    _load_template_library_file,
+    _save_template_library_file,
     save_template_library,
 )
 
@@ -382,14 +384,14 @@ def test_save_and_load_template_library_round_trips_arrays(tmp_path):
     path = tmp_path / "templates.npz"
     parameters = np.asarray([(4.5, 10.0)], dtype=[("a", "f8"), ("Macc", "f8")])
 
-    saved_path = save_template_library(
+    saved_path = _save_template_library_file(
         path,
         flux=np.asarray([[1.0, 1.2, 1.0]]),
         time=np.asarray([-1.0, 0.0, 1.0]),
         parameters=parameters,
         metadata={"source": "test"},
     )
-    library = load_template_library(saved_path)
+    library = _load_template_library_file(saved_path)
 
     assert saved_path == path
     assert np.array_equal(library.flux, [[1.0, 1.2, 1.0]])
@@ -398,11 +400,11 @@ def test_save_and_load_template_library_round_trips_arrays(tmp_path):
     assert library.metadata == {"source": "test"}
 
 
-def test_detect_can_load_templates_from_library_path(tmp_path):
+def test_detect_can_load_templates_by_version(tmp_path):
     template_time = np.arange(-10.0, 11.0)
     template_flux = np.exp(-0.5 * (template_time / 2.0) ** 2)
     library_path = save_template_library(
-        tmp_path / "templates.npz",
+        "2.0",
         flux=np.asarray([template_flux]),
         time=template_time,
     )
@@ -413,7 +415,7 @@ def test_detect_can_load_templates_from_library_path(tmp_path):
     matches = detect_matched_filter_peaks(
         time,
         flux,
-        template_library_path=library_path,
+        template_version="2.0",
         prominence=0.1,
         min_score_sigma=None,
     )
@@ -429,7 +431,7 @@ def test_library_tau_eff_limits_reported_match_window(tmp_path):
     template_flux = np.exp(-0.5 * (template_time / 2.0) ** 2)
     parameters = np.asarray([(2.0,)], dtype=[("tau_eff", "f8")])
     library_path = save_template_library(
-        tmp_path / "templates.npz",
+        "2.0",
         flux=np.asarray([template_flux]),
         time=template_time,
         parameters=parameters,
@@ -442,7 +444,7 @@ def test_library_tau_eff_limits_reported_match_window(tmp_path):
     matches = detect_matched_filter_peaks(
         time,
         flux,
-        template_library_path=library_path,
+        template_version="2.0",
         prominence=0.1,
         min_score_sigma=None,
     )
@@ -687,13 +689,13 @@ def test_detector_rejects_negative_match_window_rel_height():
         )
 
 
-def test_detect_rejects_templates_and_library_path_together(tmp_path):
-    with pytest.raises(ValueError, match="either templates or template_library_path"):
+def test_detect_rejects_templates_and_version_together(tmp_path):
+    with pytest.raises(ValueError, match="either templates or template_version"):
         detect_matched_filter_peaks(
             np.arange(10.0),
             np.ones(10),
             [MatchedFilterTemplate(np.ones(3), np.arange(3.0))],
-            template_library_path=tmp_path / "templates.npz",
+            template_version="2.0",
         )
 
 

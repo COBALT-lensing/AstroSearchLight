@@ -6,6 +6,7 @@ import pytest
 from astropy import units
 
 from searchlight.matched_filtering import load_template_library
+from searchlight import config
 
 
 def _load_generator_module():
@@ -129,7 +130,7 @@ def test_batched_filter_matches_selflensing_system_properties():
 
 def test_generator_main_writes_default_library(monkeypatch, tmp_path, capsys):
     module = _load_generator_module()
-    output = tmp_path / "templates.npz"
+    output = config.template_library_path("2.0")
     ranges = tmp_path / "ranges.json"
     ranges.write_text('{"a": [5, 20], "e": [0, 0.5]}')
     monkeypatch.setattr(
@@ -139,7 +140,8 @@ def test_generator_main_writes_default_library(monkeypatch, tmp_path, capsys):
             "Args",
             (),
             {
-                "output": output,
+                "version": "2.0",
+                "overwrite": False,
                 "grid_preset": "default",
                 "ranges_json": ranges,
                 "calibrate_completeness": False,
@@ -185,7 +187,7 @@ def test_generator_main_writes_default_library(monkeypatch, tmp_path, capsys):
 
     module.main()
 
-    library = load_template_library(output)
+    library = load_template_library("2.0")
     assert np.array_equal(library.flux, [[1.0, 2.0]])
     assert library.metadata["include_doppler_boosting"] is False
     assert library.metadata["max_eccentricity"] == 0.99

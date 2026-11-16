@@ -21,6 +21,7 @@ from astropy.time import Time
 from tqdm.auto import tqdm
 
 from .evaluation.provenance import dependency_provenance
+from . import config
 
 GENERATOR_VERSION = "photometry-batch-v1"
 DEFAULT_SEED = 20260825
@@ -409,18 +410,22 @@ def _write_curve(path, times, batch, rows, index, *, label, subtype, peak_jd):
         temporary.unlink(missing_ok=True)
 
 
-def generate_cnn_dataset(output, *, count_per_class=10000, counts=None, seed=DEFAULT_SEED,
+def generate_cnn_dataset(version, *, count_per_class=10000, counts=None, seed=DEFAULT_SEED,
                          batch_size=DEFAULT_BATCH_SIZE, noisy=True, ranges=None,
                          cadence_seconds=DEFAULT_CADENCE_SECONDS, duration_days=DEFAULT_DURATION_DAYS,
                          detection_sigma=None, inverted_fraction=0.3, peak_jd=DEFAULT_PEAK_JD,
                          max_attempts=None, progress=True):
-    """Write independent three-class FITS examples and their generation provenance.
+    """Write a new version of three-class FITS examples and generation provenance.
 
     Only lensing positives receive the amplitude/white-noise detectability
     cut (5 sigma when noisy; disabled by default for noiseless examples).
     Non-lensing controls include inverted physical signals; flares use the
     exponential flare prescription recorded in the dataset metadata.
     """
+    version = config.resolve_version("dataset", version)
+    output = config.dataset_directory(version)
+    if output.exists():
+        raise FileExistsError(f"Dataset version {version} already exists: {output}; select a new version")
     counts = dict(counts or {name: count_per_class for name in ("lensing", "flare", "not-lensing")})
     if set(counts) != {"lensing", "flare", "not-lensing"} or any(
         not isinstance(value, int) or value < 2 for value in counts.values()
@@ -433,18 +438,15 @@ def generate_cnn_dataset(output, *, count_per_class=10000, counts=None, seed=DEF
         raise ValueError("Detectability sigma must be nonnegative; noiseless data uses sigma=0")
     times = sector_times(cadence_seconds=cadence_seconds, duration_days=duration_days)
     bounds = resolve_ranges(ranges)
-    output = Path(output).expanduser().resolve()
-    if output.exists() and any(output.iterdir()):
-        raise FileExistsError(f"Dataset directory must be empty: {output}")
     max_attempts = max(100000, sum(counts.values()) * 10000) if max_attempts is None else max_attempts
     generator = LightCurveGenerator(seed=seed, cadence_seconds=cadence_seconds)
-    metadata = {**generator_metadata(ranges=bounds), "seed": seed, "batch_size": batch_size,
+    metadata = {**generator_metadata(ranges=bounds), "dataset_version": version, "seed": seed, "batch_size": batch_size,
         "noisy": noisy, "cadence_seconds": cadence_seconds, "duration_days": duration_days,
         "peak_jd": peak_jd, "peak_placement": "uniform_in_sector", "counts": counts,
         "detection_sigma": detection_sigma, "inverted_fraction": inverted_fraction,
         "flare_prescription": {"relative_amplitude": [0, 9], "decay_log10_seconds": [2, 6.5]},
         "status": "generating", "files": []}
-    output.mkdir(parents=True, exist_ok=True)
+    output.mkdir(parents=True, exist_ok=False)
     metadata_path = output / "generation.json"
     metadata_path.write_text(json.dumps(metadata, indent=2) + "\n")
     for name in counts:
@@ -505,8 +507,8 @@ def add_generation_arguments(parser):
     parser.add_argument("--max-proposal-draws", type=int, help="Bound physical draws including all rejection")
 
 
-def generate_from_args(output, args):
-    return generate_cnn_dataset(output, count_per_class=args.count_per_class,
+def generate_from_args(version, args):
+    return generate_cnn_dataset(version, count_per_class=args.count_per_class,
         seed=args.generation_seed, batch_size=args.generation_batch_size,
         noisy=not args.noiseless, cadence_seconds=args.cadence_seconds,
         duration_days=args.duration_days, detection_sigma=args.detection_sigma,
@@ -516,11 +518,11 @@ def generate_from_args(output, args):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description="Generate three-class CNN data with batched self-lensing physics and TESSGP")
-    parser.add_argument("output", type=Path)
+    parser.add_argument("--version", type=config.validate_version, required=True, help="New dataset version, e.g. 2.0")
     add_generation_arguments(parser)
     args = parser.parse_args(argv)
-    metadata = generate_from_args(args.output, args)
-    print(f"Generated {metadata['written_counts']} in {args.output}")
+    metadata = generate_from_args(args.version, args)
+    print(f"Generated {metadata['written_counts']} in {config.dataset_directory(args.version)}")
 
 
 if __name__ == "__main__":

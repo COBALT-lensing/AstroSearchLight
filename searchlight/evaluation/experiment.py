@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 
 from .datasets import EvaluationManifest
+from .. import config as artifact_config
 
 
 def read_config(path):
@@ -23,6 +24,12 @@ def read_config(path):
     for key in ('catalog', 'exclude_manifest', 'exclude_prior_runs'):
         if backgrounds.get(key):
             backgrounds[key] = str((base / Path(backgrounds[key]).expanduser()).resolve())
+    if "model_version" in config:
+        config["model_version"] = artifact_config.resolve_version("simulens", config["model_version"])
+        config["checkpoint"] = str(artifact_config.simulens_directory(config["model_version"]) / "model_weights.pth")
+    if "template_version" in config:
+        config["template_version"] = artifact_config.resolve_version("template", config["template_version"])
+        config["templates"] = str(artifact_config.template_library_path(config["template_version"]))
     return config
 
 
@@ -52,7 +59,7 @@ def inject(config):
 def score(config):
     if config.get("study_lock"):
         raise ValueError("Historical study locks are no longer supported; use bin/evaluate_pipeline.py")
-    from ..matched_filtering import load_template_library
+    from ..matched_filtering import _load_template_library_file as load_template_library
     from .runner import evaluate
     manifest = EvaluationManifest.read(config["manifest"])
     templates = load_template_library(config["templates"])

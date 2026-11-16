@@ -1,7 +1,6 @@
 {
   "output": "../../evaluation_runs/simple-evaluation",
   "manifest": "../../evaluation_runs/prepublication/spoc-cohort/prepared/manifest.json",
-  "checkpoint": "~/.astrosearchlight/models/simulens/1.0/model_weights.pth",
   "seed": 1402,
   "amplitudes_ppm": [
     100,
@@ -22,15 +21,10 @@
     "gap_factor": 1.5
   },
   "cnn": {
-    "device": "cpu",
-    "split_sizes": [
-      null,
-      7,
-      2
-    ],
-    "max_segments_per_item": 24
+    "device": "cpu"
   },
   "pipeline_order": "matched_filter_then_cnn",
   "workers": "auto",
-  "cnn_workers": 8
+  "cnn_workers": 8,
+  "model_version": null
 }

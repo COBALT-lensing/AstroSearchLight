@@ -47,11 +47,13 @@ are available as `DEFAULT_RANGES` and `SAMPLING_DISTRIBUTIONS` in the module.
 ## CNN datasets
 
 ```sh
-uv run python bin/generate_training_data.py /path/to/new-dataset \
+uv run python bin/generate_training_data.py --version 2.0 \
   --count-per-class 10000 --generation-seed 20260825
 ```
 
-The output directory must be empty. This writes the three existing classes:
+A new dataset version is written to
+`~/.astrosearchlight/datasets/simulens/2.0/`. Its directory must not already exist;
+existing versions cannot be overwritten. This writes the three existing classes:
 
 - `lensing`: self-lensing + ellipsoidal variations + Doppler boosting, with TESSGP noise.
 - `flare`: self-lensing disabled, with an exponential flare added to the physical
@@ -91,22 +93,25 @@ Each FITS table has Astropy-native time, normalized flux, flux uncertainty,
 physical truth, class/subtype, event time, and applicable GP/flare parameters.
 `generation.json` records ranges, distributions, seed, batch size, selection,
 class counts, generator source hash, simulator revisions, and per-file hashes.
-An interrupted dataset remains marked incomplete; start in a fresh directory
-or archive the partial output before retrying. Generation is not resumed in place.
+An interrupted dataset remains marked incomplete; choose a new dataset version
+to retry while retaining the partial output. Generation is not resumed in place.
 
 The CNN trainer automatically verifies and records `generation.json`:
 
 ```sh
-uv run python bin/train_cnn.py /path/to/new-dataset --output-dir /path/to/new-run
+uv run python bin/train_cnn.py --dataset-version 2.0 --version 2.0
 ```
 
 Or generate and train in one command using the same generation options:
 
 ```sh
-uv run python bin/train_cnn.py /path/to/new-dataset --output-dir /path/to/new-run \
+uv run python bin/train_cnn.py --dataset-version 2.0 --version 2.0 \
   --generate-data --count-per-class 10000 --generation-seed 20260825
 ```
 
+Omit `--dataset-version` when training to use the configured default dataset.
+The Python API accepts versions as well: `generate_cnn_dataset("2.0")` and
+`SimuLens(version="2.0").train(dataset_version="2.0")`.
 See [CNN training](cnn-training.md) for checkpoint resume and fine-tuning options.
 Seeds are repeatable for the same settings, batching, and software/hardware;
 changing batch size changes the stream of parameter and GP draws.
@@ -115,8 +120,12 @@ changing batch size changes the stream of parameter and GP draws.
 
 ```sh
 uv run python bin/generate_matched_filter_template_library.py \
-  --template-count 2000 --template-seed 20260826 --output /path/to/new-templates.npz
+  --template-count 2000 --template-seed 20260826 --version 2.0
 ```
+
+The bank is written to `~/.astrosearchlight/templates/matched_filter/2.0/templates.npz`.
+Existing versions are protected unless `--overwrite` is supplied. See
+[artifact versions](artifact-versions.md) for selection and default configuration.
 
 The `default` preset draws viable systems using the same shared proposal.
 Templates are **noiseless**, with all three physical components enabled, events

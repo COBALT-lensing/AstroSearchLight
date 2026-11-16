@@ -132,7 +132,7 @@ def _initialize_detector(template_source, settings, preprocessing, backend, norm
     from .parallel import initialize_worker
     initialize_worker()
     if isinstance(template_source, (str, Path)):
-        from ..matched_filtering import load_template_library
+        from ..matched_filtering import _load_template_library_file as load_template_library
         templates = load_template_library(template_source)
     else:
         templates = template_source

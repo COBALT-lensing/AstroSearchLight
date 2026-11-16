@@ -1,21 +1,28 @@
 # CNN training
 
-Train from a directory containing one subdirectory per class, with `.fits` or
-`.fits.gz` light curves beneath each class directory. Labels are the sorted
+Select a dataset with `--dataset-version`. Its class folders are loaded from
+`~/.astrosearchlight/datasets/simulens/<version>/`, containing `.fits` or
+`.fits.gz` light curves. Labels are the sorted
 folder names. Every class must contain at least two light curves; empty class
 folders are rejected. The trainer can generate a dataset first with `--generate-data`; otherwise it reads existing FITS files.
 
 ```sh
 uv sync --locked
-uv run python bin/train_cnn.py /path/to/dataset \
-  --output-dir /path/to/new-run --seed 42 --max-epochs 100
+uv run python bin/train_cnn.py --dataset-version 2.0 \
+  --version 2.0 --seed 42 --max-epochs 100
 ```
 
-Choose a fresh run directory. The CLI requires an explicit output directory;
-existing training artifacts are protected unless `--overwrite` is supplied.
-The existing production model is not replaced by training into a new directory.
-To fine-tune the existing SimuLens on an updated dataset, start a new run with
-`--init-checkpoint /path/to/model_weights.pth`. Its sibling `model_classes.json`
+Omit `--dataset-version` to use `dataset_version` from the configuration file
+or `DEFAULT_DATASET_VERSION` in `searchlight/config.py`. Dataset and model
+versions are independent. `--generate-data` requires an explicit dataset version
+and refuses to replace an existing dataset.
+
+Choose a new model version. The CLI requires `--version` and writes to
+`~/.astrosearchlight/models/simulens/<version>/`. Existing artifacts are protected
+unless `--overwrite` is supplied. See [artifact versions](artifact-versions.md)
+for default selection and preserving prior versions.
+To fine-tune an existing SimuLens on an updated dataset, start a new run with
+`--version 2.0 --init-version 1.0`. The source version's `model_classes.json`
 must exactly match the new dataset's class mapping. This loads the model weights
 with a fresh optimizer, split, and training history; the initial checkpoint's
 SHA-256 is recorded. It does not require the old training dataset or optimizer.
@@ -51,6 +58,7 @@ Each run writes:
 
 - `model_weights.pth`: the best validation model, compatible with existing inference.
 - `model_classes.json`: the matching ordered class names.
+- `inference.json`: segment lengths and segment cap, restored automatically for classification.
 - `training_checkpoint.pth`: latest completed epoch, optimizer, scheduler, mixed
   precision scaler, best weights, history, RNG states, and loader generator state.
 - `training_run.json`: settings, split indices, per-file SHA-256 hashes and relative
@@ -58,18 +66,17 @@ Each run writes:
   identities, and environment information. Split indices refer to the manifest.
 
 ```sh
-uv run python bin/train_cnn.py /path/to/dataset \
-  --output-dir /path/to/new-run --seed 42 --max-epochs 150 --resume
+uv run python bin/train_cnn.py --dataset-version 2.0 \
+  --version 2.0 --seed 42 --max-epochs 150 --resume
 ```
 
 Resume restores the latest completed epoch, not the best inference model.
 `--max-epochs` is the total target, including previously completed epochs.
 Repeat the original training options: changes to data, classes, or training
-settings are rejected. The dataset may move as long as relative paths and file
-contents remain identical. Resume does not download ImageNet weights.
+settings are rejected. The dataset version and file contents must remain identical. Resume does not download ImageNet weights.
 The prior run metadata is retained in the resumed run. Legacy inference-only
 checkpoints cannot resume training because they contain no optimizer or RNG state;
-use `--init-checkpoint` to start a new fine-tuning run from those weights instead.
+use `--init-version` to start a new fine-tuning run from those weights instead.
 
 Seeds and RNG state make runs repeatable within the same software and hardware
 environment; GPU backends and different environments can still differ numerically.

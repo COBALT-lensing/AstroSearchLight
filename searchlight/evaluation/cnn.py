@@ -6,13 +6,16 @@ from pathlib import Path
 import numpy as np
 
 from .scoring import cnn_score
+from .. import config
 
 
 class EvaluationCNN:
-    def __init__(self, checkpoint, classes=None, *, device="cpu", split_sizes=(np.inf, 7., 2.),
-                 max_segments_per_item=24, seed=42, workers=1):
+    def __init__(self, checkpoint=None, classes=None, *, version=None, device="cpu", split_sizes=None,
+                 max_segments_per_item=None, seed=42, workers=1):
         import torch
-        self.MODEL_SAVE_PATH = Path(checkpoint)
+        if checkpoint is not None and version is not None:
+            raise ValueError("Pass a version or an archived checkpoint, not both")
+        self.MODEL_SAVE_PATH = Path(checkpoint) if checkpoint is not None else config.simulens_directory(version) / "model_weights.pth"
         self.CLASS_SAVE_PATH = Path(classes) if classes else self.MODEL_SAVE_PATH.with_name("model_classes.json")
         self.classes = json.loads(self.CLASS_SAVE_PATH.read_text())
         if not self.classes or len(set(self.classes)) != len(self.classes):
@@ -23,12 +26,9 @@ class EvaluationCNN:
                           "axes.facecolor": "white", "axes.xmargin": .05, "axes.ymargin": .05,
                           "figure.subplot.left": .125, "figure.subplot.right": .9,
                           "figure.subplot.bottom": .11, "figure.subplot.top": .88}
-        self.split_sizes = [np.inf if value is None else float(value) for value in split_sizes]
-        if not self.split_sizes or any(value <= 0 or np.isnan(value) for value in self.split_sizes):
-            raise ValueError("Invalid CNN segment sizes")
-        if max_segments_per_item is not None and max_segments_per_item < 1:
-            raise ValueError("Invalid CNN segment cap")
-        self.max_segments_per_item = max_segments_per_item
+        self.split_sizes, self.max_segments_per_item = config.cnn_inference_settings(
+            self.MODEL_SAVE_PATH.parent, split_sizes=split_sizes,
+            max_segments_per_item=max_segments_per_item)
         from .parallel import worker_count
         self.workers = worker_count(workers) if self.device.type == 'cpu' else 1
         self.seed = seed

@@ -18,7 +18,8 @@ def test_full_configuration_resolves_assets_and_covers_manuscript_ranges():
     assert {k: tuple(v) for k, v in config['injection']['ranges'].items()} == RV_MANUSCRIPT_RANGES
     assert config['injection']['coverage_policy'] == 'all_events'
     assert config['shapes_per_target'] > 1
-    assert config['templates'].endswith('matched_filter_templates.npz')
+    assert config['template_version'] == '1.0'
+    assert config['templates'].endswith('templates/matched_filter/1.0/templates.npz')
     assert Path(config['backgrounds']['catalog']).is_absolute()
     assert Path(config['backgrounds']['exclude_prior_runs']).is_absolute()
 

@@ -14,9 +14,9 @@ from typing import Iterable
 import numpy as np
 from scipy import signal
 
-from .paths import CACHE_PATH, DATA_PATH
+from .paths import CACHE_PATH
+from . import config
 
-DEFAULT_TEMPLATE_LIBRARY_PATH = DATA_PATH / "matched_filter_templates.npz"
 DEFAULT_JAX_COMPILATION_CACHE_PATH = CACHE_PATH / "jax_compilation_cache"
 logger = logging.getLogger(__name__)
 DEFAULT_PROMINENCE_SIGMA = 3.0
@@ -116,8 +116,8 @@ class _PreparedMatchedFilterTemplate:
     event_half_width: float | None = None
 
 
-def save_template_library(
-    path=DEFAULT_TEMPLATE_LIBRARY_PATH,
+def _save_template_library_file(
+    path,
     *,
     flux,
     time,
@@ -147,7 +147,7 @@ def save_template_library(
     return path
 
 
-def load_template_library(path=DEFAULT_TEMPLATE_LIBRARY_PATH):
+def _load_template_library_file(path):
     """Load a template library saved by :func:`save_template_library`."""
 
     with np.load(Path(path), allow_pickle=False) as data:
@@ -159,6 +159,36 @@ def load_template_library(path=DEFAULT_TEMPLATE_LIBRARY_PATH):
             parameters=parameters,
             metadata=json.loads(metadata_json),
         )
+
+
+def save_template_library(version=None, *, overwrite=False, **arrays):
+    """Save a bank under a numeric version, protecting existing versions by default."""
+    import tempfile
+    version = config.resolve_version("template", version)
+    path = config.template_library_path(version)
+    if path.exists() and not overwrite:
+        raise FileExistsError(f"Template version already exists: {path}")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    arrays["metadata"] = {**(arrays.get("metadata") or {}), "template_version": version}
+    with tempfile.NamedTemporaryFile(dir=path.parent, suffix=".npz", delete=False) as stream:
+        temporary = Path(stream.name)
+    try:
+        _save_template_library_file(temporary, **arrays)
+        if overwrite:
+            os.replace(temporary, path)
+        else:
+            path.hardlink_to(temporary)  # Exclusive publication: never replace another bank.
+    finally:
+        temporary.unlink(missing_ok=True)
+    return path
+
+
+def load_template_library(version=None):
+    """Load a numeric version, or the configured default template bank."""
+    version = config.resolve_version("template", version)
+    library = _load_template_library_file(config.template_library_path(version))
+    library.metadata.setdefault("template_version", version)
+    return library
 
 
 def _as_float_array(values, name: str) -> np.ndarray:
@@ -437,13 +467,13 @@ def _dedupe_overlapping_matches(
 
 def _resolve_templates(
     templates: Iterable[MatchedFilterTemplate] | None,
-    template_library_path,
+    template_version,
 ) -> tuple[Iterable[MatchedFilterTemplate], dict | None]:
     template_metadata = getattr(templates, "metadata", None)
-    if template_library_path is not None:
+    if template_version is not None:
         if templates is not None:
-            raise ValueError("Pass either templates or template_library_path, not both")
-        templates = load_template_library(template_library_path)
+            raise ValueError("Pass either templates or template_version, not both")
+        templates = load_template_library(template_version)
         template_metadata = templates.metadata
     elif templates is None:
         templates = load_template_library()
@@ -1421,7 +1451,7 @@ def detect_matched_filter_peaks(
     flux,
     templates: Iterable[MatchedFilterTemplate] | None = None,
     *,
-    template_library_path=None,
+    template_version=None,
     prominence: float | None = None,
     prominence_sigma: float = _UNSET,
     height: float | None = None,
@@ -1455,12 +1485,12 @@ def detect_matched_filter_peaks(
     templates : iterable, optional
         Template objects with flux and time arrays. Each template is resampled
         to the median cadence of the input light curve. If omitted, the default
-        template library in ``~/.astrosearchlight`` is loaded. If a resampled
+        configured versioned template library is loaded. If a resampled
         template is at least as long as the light curve, the mean-subtracted
         search flux is zero-padded so the full template can slide across the
         observation.
-    template_library_path : optional
-        Path to a template library saved by :func:`save_template_library`.
+    template_version : str, optional
+        Numeric template version, such as "1.0". Defaults to the configured version.
     prominence : float, optional
         Direct prominence threshold for ``find_peaks``. If omitted, a robust
         threshold is estimated from the matched-filter envelope for
@@ -1504,7 +1534,7 @@ def detect_matched_filter_peaks(
         peaks with matching template polarity.
     """
 
-    templates, template_metadata = _resolve_templates(templates, template_library_path)
+    templates, template_metadata = _resolve_templates(templates, template_version)
     if match_window_rel_height < 0:
         raise ValueError("match_window_rel_height must be non-negative")
 
@@ -1576,7 +1606,7 @@ def detect_matched_filter_peaks_batched(
     flux,
     templates: Iterable[MatchedFilterTemplate] | None = None,
     *,
-    template_library_path=None,
+    template_version=None,
     prominence: float | None = None,
     prominence_sigma: float = _UNSET,
     height: float | None = None,
@@ -1603,7 +1633,7 @@ def detect_matched_filter_peaks_batched(
     templates are searched.
     """
 
-    templates, template_metadata = _resolve_templates(templates, template_library_path)
+    templates, template_metadata = _resolve_templates(templates, template_version)
     if match_window_rel_height < 0:
         raise ValueError("match_window_rel_height must be non-negative")
     prominence_sigma, min_score_sigma = _resolve_threshold_sigmas(

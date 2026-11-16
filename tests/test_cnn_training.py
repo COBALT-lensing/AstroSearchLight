@@ -7,7 +7,7 @@ import torch
 
 from searchlight.models.simulens import v1
 from searchlight.models.simulens import training
-from searchlight import utils
+from searchlight import utils, config
 
 
 class TinyNetwork(torch.nn.Module):
@@ -33,13 +33,15 @@ def setup_training(monkeypatch, tmp_path):
         _, label = self.samples[index]
         return [torch.full((1, 2, 2), float(index + 1))], label
     monkeypatch.setattr(v1.GroupedLightcurveFolderDataSet, "__getitem__", get_item)
-    root = tmp_path / "dataset"
+    root = config.dataset_directory("2.0")
     for name in ("lensing", "not-lensing"):
         (root / name).mkdir(parents=True)
         for index in range(5):
             (root / name / f"{index}.fits").write_text(f"{name}-{index}")
+    versions = {}
     def trainer(name):
-        return v1.SimuLens(device="cpu", output_dir=tmp_path / name,
+        version = versions.setdefault(name, f"{len(versions) + 1}.0")
+        return v1.SimuLens(device="cpu", version=version,
                           pretrained=False, loader_batch_size=2, loader_workers=0)
     yield root, trainer
     torch.set_num_threads(previous_threads)
@@ -79,7 +81,7 @@ def test_best_checkpoint_is_independent_and_patience_stops(setup_training, monke
             model.optimizer.step()
         return {"loss": 1.0 if training else next(losses), "accuracy": 0.5}
     monkeypatch.setattr(training, "_epoch", epoch)
-    run = trainer.train(root, max_epochs=20, patience=2)
+    run = trainer.train("2.0", max_epochs=20, patience=2)
     checkpoint = torch.load(trainer.MODEL_SAVE_PATH.parent / "training_checkpoint.pth", weights_only=True)
     best = torch.load(trainer.MODEL_SAVE_PATH, weights_only=True)
     assert run["best_epoch"] == 2
@@ -93,13 +95,13 @@ def test_best_checkpoint_is_independent_and_patience_stops(setup_training, monke
 def test_resume_matches_uninterrupted_training_and_records_split(setup_training):
     root, make_trainer = setup_training
     full = make_trainer("full")
-    full.train(root, max_epochs=4, patience=10, seed=17)
+    full.train("2.0", max_epochs=4, patience=10, seed=17)
     partial = make_trainer("resumed")
-    partial.train(root, max_epochs=2, patience=10, seed=17,
+    partial.train("2.0", max_epochs=2, patience=10, seed=17,
                   provenance={"simulator_revision": "fixture"})
     resumed = make_trainer("resumed")
-    run = resumed.train(root, max_epochs=4, patience=10, seed=17,
-        resume=partial.MODEL_SAVE_PATH.parent / "training_checkpoint.pth")
+    run = resumed.train("2.0", max_epochs=4, patience=10, seed=17,
+        resume=True)
     full_checkpoint = torch.load(full.MODEL_SAVE_PATH.parent / "training_checkpoint.pth", weights_only=True)
     resumed_checkpoint = torch.load(resumed.MODEL_SAVE_PATH.parent / "training_checkpoint.pth", weights_only=True)
     assert full_checkpoint["history"] == resumed_checkpoint["history"]
@@ -118,24 +120,24 @@ def test_resume_matches_uninterrupted_training_and_records_split(setup_training)
 def test_existing_run_and_changed_resume_data_are_rejected(setup_training):
     root, make_trainer = setup_training
     trainer = make_trainer("protected")
-    trainer.train(root, max_epochs=1)
+    trainer.train("2.0", max_epochs=1)
     weights = trainer.MODEL_SAVE_PATH.read_bytes()
     with pytest.raises(FileExistsError):
-        trainer.train(root, max_epochs=2)
+        trainer.train("2.0", max_epochs=2)
     (root / "lensing" / "0.fits").write_text("changed")
     with pytest.raises(ValueError, match="Dataset contents"):
-        trainer.train(root, max_epochs=2,
-                      resume=trainer.MODEL_SAVE_PATH.parent / "training_checkpoint.pth")
+        trainer.train("2.0", max_epochs=2,
+                      resume=True)
     assert trainer.MODEL_SAVE_PATH.read_bytes() == weights
 
 
 def test_resume_rejects_changed_settings(setup_training):
     root, make_trainer = setup_training
     trainer = make_trainer("settings")
-    trainer.train(root, max_epochs=1)
+    trainer.train("2.0", max_epochs=1)
     with pytest.raises(ValueError, match="settings changed"):
-        trainer.train(root, max_epochs=2, seed=99,
-                      resume=trainer.MODEL_SAVE_PATH.parent / "training_checkpoint.pth")
+        trainer.train("2.0", max_epochs=2, seed=99,
+                      resume=True)
 
 
 def test_empty_class_is_rejected_before_writing_artifacts(setup_training):
@@ -143,7 +145,7 @@ def test_empty_class_is_rejected_before_writing_artifacts(setup_training):
     (root / "empty").mkdir()
     trainer = make_trainer("empty")
     with pytest.raises(ValueError, match="nonempty classes"):
-        trainer.train(root, max_epochs=1)
+        trainer.train("2.0", max_epochs=1)
     assert not trainer.MODEL_SAVE_PATH.parent.exists()
 
 
@@ -175,7 +177,7 @@ def test_min_delta_counts_cumulative_improvement(setup_training, monkeypatch):
             model.optimizer.step()
         return {"loss": 1.0 if training else next(losses), "accuracy": 0.5}
     monkeypatch.setattr(training, "_epoch", epoch)
-    run = trainer.train(root, max_epochs=4, patience=2, min_delta=0.05)
+    run = trainer.train("2.0", max_epochs=4, patience=2, min_delta=0.05)
     assert run["stopped_epoch"] == 4
     assert run["stop_reason"] == "max_epochs"
     assert run["best_epoch"] == 4
@@ -191,24 +193,24 @@ def test_real_fits_rendering_training_and_inference(tmp_path, monkeypatch):
     monkeypatch.setattr(training, "_source_provenance", lambda: {"test": True})
     monkeypatch.setattr(utils, "FUNC_CACHE_PATH", tmp_path / "cache")
     monkeypatch.setattr(utils, "CACHE_ENABLED", True)
-    root = tmp_path / "fits"
+    root = config.dataset_directory("2.0")
     for label, name in enumerate(("lensing", "not-lensing")):
         (root / name).mkdir(parents=True)
         for index in range(4):
             curve = TimeSeries(time=Time(2460000 + np.arange(12) / 12, format="jd"))
             curve["flux"] = 1 + (label + 1) * np.sin(np.arange(12) + index) * 0.01
             QTable({"time": curve.time, "flux": curve["flux"]}).write(root / name / f"{index}.fits")
-    trainer = v1.SimuLens(device="cpu", output_dir=tmp_path / "run", pretrained=False,
+    trainer = v1.SimuLens(device="cpu", version="2.0", pretrained=False,
                          loader_workers=0, loader_batch_size=2, split_sizes=[np.inf])
-    run = trainer.train(root, max_epochs=1)
+    run = trainer.train("2.0", max_epochs=1)
     assert run["best_epoch"] == 1
-    inference = v1.SimuLens(device="cpu", output_dir=tmp_path / "run", pretrained=False,
+    inference = v1.SimuLens(device="cpu", version="2.0", pretrained=False,
                            loader_workers=0, split_sizes=[np.inf])
     path = str(root / "lensing" / "0.fits")
     assert inference.classify_paths([path])[path][0] in run["classes"]
 
 
-def test_cli_requires_explicit_output_and_resumes_without_imagenet(tmp_path, monkeypatch):
+def test_cli_requires_explicit_version_and_resumes_without_imagenet(tmp_path, monkeypatch):
     import runpy
     from pathlib import Path
     from searchlight.models import simulens
@@ -218,24 +220,24 @@ def test_cli_requires_explicit_output_and_resumes_without_imagenet(tmp_path, mon
         LOADER_WORKERS = 0
         def __init__(self, **kwargs):
             seen["init"] = kwargs
-            self.MODEL_SAVE_PATH = kwargs["output_dir"] / "model_weights.pth"
+            self.MODEL_SAVE_PATH = config.simulens_directory(kwargs["version"]) / "model_weights.pth"
         def train(self, path, **kwargs):
             seen["train"] = (path, kwargs)
             return {"best_epoch": 1}
     monkeypatch.setattr(simulens, "SimuLens", FakeTrainer)
     main = runpy.run_path(str(Path(__file__).parents[1] / "bin/train_cnn.py"))["main"]
     with pytest.raises(SystemExit):
-        main([str(tmp_path / "data")])
+        main([])
     assert not seen
-    main([str(tmp_path / "data"), "--output-dir", str(tmp_path / "run"), "--resume"])
+    main(["--dataset-version", "2.0", "--version", "2.0", "--resume"])
     assert seen["init"]["pretrained"] is False
-    assert seen["train"][1]["resume"] == tmp_path / "run/training_checkpoint.pth"
+    assert seen["train"][1]["resume"] is True
 
 
 def test_new_dataset_can_initialize_from_existing_model(setup_training, monkeypatch):
     root, make_trainer = setup_training
     source = make_trainer("source")
-    source.train(root, max_epochs=1)
+    source.train("2.0", max_epochs=1)
     source_weights = torch.load(source.MODEL_SAVE_PATH, weights_only=True)
     (root / "lensing/0.fits").write_text("updated dataset")
     target = make_trainer("fine-tune")
@@ -249,26 +251,26 @@ def test_new_dataset_can_initialize_from_existing_model(setup_training, monkeypa
             seen.append(True)
         return original_epoch(trainer, loader, training=training)
     monkeypatch.setattr(training, "_epoch", epoch)
-    run = target.train(root, max_epochs=1, init_checkpoint=source.MODEL_SAVE_PATH)
+    run = target.train("2.0", max_epochs=1, init_version=source.version)
     assert seen
     assert run["initialization"]["checkpoint"] == str(source.MODEL_SAVE_PATH)
     assert len(run["initialization"]["sha256"]) == 64
     (source.CLASS_SAVE_PATH).write_text('["not-lensing", "lensing"]')
     rejected = make_trainer("wrong-mapping")
     with pytest.raises(ValueError, match="class mapping"):
-        rejected.train(root, max_epochs=1, init_checkpoint=source.MODEL_SAVE_PATH)
+        rejected.train("2.0", max_epochs=1, init_version=source.version)
     assert not rejected.MODEL_SAVE_PATH.parent.exists()
 
 
 def test_overwrite_does_not_leave_old_resume_checkpoint_on_failure(setup_training, monkeypatch):
     root, make_trainer = setup_training
     trainer = make_trainer("overwrite")
-    trainer.train(root, max_epochs=1)
+    trainer.train("2.0", max_epochs=1)
     def fail(*args, **kwargs):
         raise RuntimeError("failed first epoch")
     monkeypatch.setattr(training, "_epoch", fail)
     with pytest.raises(RuntimeError, match="first epoch"):
-        trainer.train(root, max_epochs=1, overwrite=True)
+        trainer.train("2.0", max_epochs=1, overwrite=True)
     assert not (trainer.MODEL_SAVE_PATH.parent / "training_checkpoint.pth").exists()
     assert not trainer.MODEL_SAVE_PATH.exists()
 
@@ -281,12 +283,66 @@ def test_generated_dataset_provenance_is_loaded_and_verified(setup_training):
     generated = {"generator": "photometry-batch-v1", "status": "complete", "files": entries}
     (root / "generation.json").write_text(json.dumps(generated))
     trainer = make_trainer("generated")
-    run = trainer.train(root, max_epochs=1)
+    run = trainer.train("2.0", max_epochs=1)
     assert run["dataset_provenance"]["generation"] == generated
     (root / "lensing/0.fits").write_text("changed since generation")
     with pytest.raises(ValueError, match="generation manifest"):
-        make_trainer("changed-generated").train(root, max_epochs=1)
+        make_trainer("changed-generated").train("2.0", max_epochs=1)
     generated["status"] = "generating"
     (root / "generation.json").write_text(json.dumps(generated))
     with pytest.raises(ValueError, match="incomplete"):
-        make_trainer("incomplete-generated").train(root, max_epochs=1)
+        make_trainer("incomplete-generated").train("2.0", max_epochs=1)
+
+
+def test_classification_and_evaluation_restore_saved_segment_settings(setup_training, monkeypatch):
+    from searchlight.evaluation.cnn import EvaluationCNN
+    root, make_trainer = setup_training
+    trainer = make_trainer("segments")
+    trainer.split_sizes = [float("inf"), 3., .5]
+    trainer.max_segments_per_item = 8
+    trainer.train("2.0", max_epochs=1)
+    saved = json.loads((trainer.MODEL_SAVE_PATH.parent / "inference.json").read_text())
+    assert saved == {"split_sizes": [None, 3., .5], "max_segments_per_item": 8}
+    reloaded = make_trainer("segments")
+    monkeypatch.setattr(v1.GroupedLightcurvePathsDataSet, "__getitem__",
+        lambda self, index: ([torch.ones(1, 2, 2)], self.paths[index]))
+    assert reloaded.classify_paths(["first", "second"])
+    assert reloaded.split_sizes == [float("inf"), 3., .5]
+    assert reloaded.max_segments_per_item == 8
+    # Multiple workers defer model initialization but must resolve the same settings.
+    evaluation = EvaluationCNN(version=trainer.version, workers=2)
+    assert evaluation.split_sizes == reloaded.split_sizes
+    assert evaluation.max_segments_per_item == reloaded.max_segments_per_item
+
+
+def test_training_uses_configured_dataset_version_and_records_it(setup_training):
+    root, make_trainer = setup_training
+    config.initialize_config()
+    config.config_path().write_text('{"dataset_version":"2.0"}')
+    trainer = make_trainer("default-dataset")
+    run = trainer.train(max_epochs=1)
+    assert run["dataset_version"] == "2.0"
+    assert run["dataset_root"] == str(root)
+    assert run["settings"]["dataset_version"] == "2.0"
+    assert run["model_version"] == trainer.version
+    assert run["model_version"] != run["dataset_version"]
+
+
+def test_resume_rejects_a_different_dataset_version_even_with_same_contents(setup_training):
+    import shutil
+    root, make_trainer = setup_training
+    trainer = make_trainer("dataset-resume")
+    trainer.train("2.0", max_epochs=1)
+    shutil.copytree(root, config.dataset_directory("3.0"))
+    with pytest.raises(ValueError, match="settings changed"):
+        trainer.train("3.0", max_epochs=2, resume=True)
+
+
+def test_training_rejects_dataset_paths_and_missing_versions(setup_training):
+    root, make_trainer = setup_training
+    trainer = make_trainer("missing-dataset")
+    with pytest.raises(ValueError, match="Version must"):
+        trainer.train(root, max_epochs=1)
+    with pytest.raises(FileNotFoundError, match="Dataset version 9.0"):
+        trainer.train("9.0", max_epochs=1)
+    assert not trainer.MODEL_SAVE_PATH.parent.exists()

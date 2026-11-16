@@ -242,6 +242,14 @@ def run(config):
             raise RuntimeError('cuda_fft requires a CUDA GPU visible to PyTorch; no GPU is available in this process')
         print(f'GPU matched filter: {torch.cuda.get_device_name(0)} (float64 FFT)', flush=True)
     output = Path(config['output']).resolve()
+    from .. import config as artifact_config
+    config = dict(config)
+    if "model_version" in config or not config.get("checkpoint"):
+        config["model_version"] = artifact_config.resolve_version("simulens", config.get("model_version"))
+        config["checkpoint"] = str(artifact_config.simulens_directory(config["model_version"]) / "model_weights.pth")
+    if "template_version" in config:
+        config["template_version"] = artifact_config.resolve_version("template", config["template_version"])
+        config["templates"] = str(artifact_config.template_library_path(config["template_version"]))
     checkpoint = Path(config['checkpoint']).expanduser()
     if not checkpoint.is_file():
         raise FileNotFoundError(f'CNN checkpoint missing: {checkpoint}')
@@ -284,7 +292,7 @@ def run(config):
         if any(s.parent_id or s.label == 'lensing' or s.suite == 'simulated' for s in manifest.samples):
             raise ValueError('Input must contain original real backgrounds, not injected or confirmed-positive examples')
         if config.get('templates'):
-            from ..matched_filtering import load_template_library
+            from ..matched_filtering import _load_template_library_file as load_template_library
             template_path = Path(config['templates'])
             print(f'[2/5] Load fixed template bank: {template_path}', flush=True)
             templates = load_template_library(template_path)

@@ -121,7 +121,7 @@ def create_physical_templates(path, *, seed=123, count=16, cadence_seconds=120.,
     from .injections import physical_profile, sample_physical_system, PHYSICAL_GEOMETRY
     from .provenance import dependency_provenance
     from .proposals import sampling_distributions
-    from ..matched_filtering import MatchedFilterTemplateLibrary, save_template_library
+    from ..matched_filtering import MatchedFilterTemplateLibrary, _save_template_library_file as save_template_library
     import importlib.metadata
     rng = np.random.default_rng(seed)
     systems = [sample_physical_system(rng, ranges=ranges, proposal=proposal) for _ in range(count)]

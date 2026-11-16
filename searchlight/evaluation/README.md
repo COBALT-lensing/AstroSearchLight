@@ -63,7 +63,7 @@ useful settings are:
 | `output` | Base name of the saved run directory |
 | `backgrounds` | Catalogue selection, sectors, cadence, target count, and tuning split |
 | `manifest` | Alternative to `backgrounds`: reuse prepared observations and their splits |
-| `checkpoint`, `templates` | CNN and matched-filter assets to evaluate |
+| `model_version`, `template_version` | Artifact versions to evaluate; `null` uses configured defaults |
 | `shapes_per_target` | Number of independent physical profiles per background |
 | `amplitudes_ppm` | Signal strengths to test |
 | `injection.ranges` | Physical parameter ranges for the profile proposal |
@@ -218,3 +218,6 @@ The next steps are:
 Model improvements are separate from completing the evaluation. For additional
 configuration examples and lower-level commands, see the
 [evaluation module README](searchlight/evaluation/README.md).
+
+Artifact selection and automatic CNN segment restoration are described in
+[artifact versions](../../docs/artifact-versions.md).

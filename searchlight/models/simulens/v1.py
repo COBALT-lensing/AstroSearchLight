@@ -18,13 +18,14 @@ from torch.utils.data import DataLoader, Dataset
 from torchvision import models
 
 from ...lightcurves import plot, load
+from ... import config
 from ...paths import DATA_PATH
 from ...utils import cache
 
 IMAGE_DIMS = (224, 224)
 PLOT_CACHE_PATH = DATA_PATH / "plots"
 
-DEFAULT_SPLIT_SIZES = [numpy.inf, 7, 2]
+DEFAULT_SPLIT_SIZES = list(config.DEFAULT_SPLIT_SIZES)
 
 
 def plot_to_rgb(f):
@@ -398,13 +399,12 @@ class LightcurvePathsDataSet(Dataset):
 
 
 class SimuLens(object):
-    MODEL_SAVE_PATH = DATA_PATH / "models" / "simulens" / "1.0" / "model_weights.pth"
     STOPPING_PATIENCE = 5
     LOADER_BATCH_SIZE = 8
     # Limit loader workers to 4, or less if there are fewer CPUs
     LOADER_WORKERS = min(4, os.cpu_count() or 1)
     LOADER_PREFETCH_FACTOR = 1
-    MAX_SEGMENTS_PER_ITEM = 24
+    MAX_SEGMENTS_PER_ITEM = config.DEFAULT_MAX_SEGMENTS_PER_ITEM
     DEFAULT_NUM_CLASSES = 2
 
     def __init__(
@@ -413,20 +413,22 @@ class SimuLens(object):
         lr=0.001,
         scheduler_step_size=5,
         scheduler_gamma=0.5,
-        split_sizes=DEFAULT_SPLIT_SIZES,
+        split_sizes=None,
         loader_batch_size=None,
         loader_workers=None,
         loader_prefetch_factor=None,
         max_segments_per_item=None,
         use_amp=True,
-        output_dir=None,
+        version=None,
         pretrained=True,
     ):
-        if output_dir is not None:
-            self.MODEL_SAVE_PATH = Path(output_dir).expanduser().resolve() / "model_weights.pth"
+        self.version = config.resolve_version("simulens", version)
+        self.MODEL_SAVE_PATH = config.simulens_directory(self.version) / "model_weights.pth"
+        self._split_sizes_override = split_sizes
+        self._segment_cap_override = max_segments_per_item
         self.pretrained = pretrained
         self.CLASS_SAVE_PATH = self.MODEL_SAVE_PATH.parent / "model_classes.json"
-        self.split_sizes = split_sizes
+        self.split_sizes = DEFAULT_SPLIT_SIZES if split_sizes is None else split_sizes
         if device is not None:
             self.device = torch.device(device)
         else:
@@ -544,16 +546,25 @@ class SimuLens(object):
 
         raise RuntimeError("Could not load model weights into SegmentAwareResNet")
 
-    def train(self, path, *, seed=42, max_epochs=100, patience=5,
-              min_delta=0.0, resume=None, overwrite=False, provenance=None,
-              init_checkpoint=None):
+    def train(self, dataset_version=None, *, seed=42, max_epochs=100, patience=5,
+              min_delta=0.0, resume=False, overwrite=False, provenance=None,
+              init_version=None):
         from .training import train
 
-        return train(self, path, seed=seed, max_epochs=max_epochs, patience=patience,
+        return train(self, dataset_version, seed=seed, max_epochs=max_epochs, patience=patience,
                      min_delta=min_delta, resume=resume, overwrite=overwrite,
-                     provenance=provenance, init_checkpoint=init_checkpoint)
+                     provenance=provenance, init_version=init_version)
+
+    def _restore_inference_settings(self):
+        self.split_sizes, self.max_segments_per_item = config.cnn_inference_settings(
+            self.MODEL_SAVE_PATH.parent, split_sizes=self._split_sizes_override,
+            max_segments_per_item=self._segment_cap_override)
 
     def classify(self, dataset, label=None):
+        self._restore_inference_settings()
+        if isinstance(dataset, (GroupedLightcurveFolderDataSet, GroupedLightcurvePathsDataSet)):
+            dataset.split_sizes = self.split_sizes
+            dataset.max_segments_per_item = self.max_segments_per_item
         with open(self.CLASS_SAVE_PATH, "r") as class_f:
             self.classes = json.load(class_f)
         self._set_model(len(self.classes))
@@ -588,6 +599,7 @@ class SimuLens(object):
         )
 
     def classify_paths(self, paths, label=None):
+        self._restore_inference_settings()
         return self.classify(
             GroupedLightcurvePathsDataSet(
                 paths=paths,

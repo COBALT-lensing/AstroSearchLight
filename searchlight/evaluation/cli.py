@@ -2,6 +2,7 @@
 
 import argparse
 from pathlib import Path
+from .. import config
 
 
 def main(argv=None):
@@ -14,12 +15,11 @@ def main(argv=None):
     demo.add_argument("--test-groups", type=int, default=80)
     run = commands.add_parser("run", help="Evaluate an existing manifest and library")
     run.add_argument("manifest", type=Path)
-    run.add_argument("templates", type=Path)
+    run.add_argument("--template-version", type=config.validate_version)
     run.add_argument("output", type=Path)
     run.add_argument("--positive-class", default="lensing")
     run.add_argument("--cnn", action="store_true")
-    run.add_argument("--checkpoint", type=Path)
-    run.add_argument("--classes", type=Path)
+    run.add_argument("--model-version", type=config.validate_version)
     run.add_argument("--backend", choices=["cpu", "jax", "auto"], default="cpu")
     run.add_argument("--normalize-scores", action="store_true")
     run.add_argument("--workers", type=lambda value: "auto" if value == "auto" else int(value), default="auto")
@@ -74,13 +74,11 @@ def main(argv=None):
         from .datasets import EvaluationManifest
         from ..matched_filtering import load_template_library
         cnn = None
-        if args.cnn or args.checkpoint:
+        if args.cnn or args.model_version:
             from .cnn import EvaluationCNN
-            from ..paths import DATA_PATH
-            checkpoint = args.checkpoint or DATA_PATH / "models/simulens/1.0/model_weights.pth"
             from .parallel import worker_count
-            cnn = EvaluationCNN(checkpoint, args.classes, workers=min(worker_count(args.workers), 8))
-        metrics = evaluate(EvaluationManifest.read(args.manifest), load_template_library(args.templates),
+            cnn = EvaluationCNN(version=args.model_version, workers=min(worker_count(args.workers), 8))
+        metrics = evaluate(EvaluationManifest.read(args.manifest), load_template_library(args.template_version),
             args.output, positive_class=args.positive_class, max_fpr=args.max_fpr, cnn=cnn,
             preprocessing={}, normalize_scores=args.normalize_scores, backend=args.backend,
             bootstrap_repeats=args.bootstrap_repeats, workers=args.workers, progress=True)

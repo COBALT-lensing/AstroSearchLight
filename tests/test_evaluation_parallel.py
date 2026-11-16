@@ -35,7 +35,7 @@ def test_parallel_matched_filter_preserves_scores_thresholds_and_matches(tmp_pat
     from searchlight.evaluation.runner import evaluate
     monkeypatch.setattr('searchlight.evaluation.reporting.save_figures', lambda directory: None)
     manifest = create_demo(tmp_path / 'data', tuning_groups=2, test_groups=2)
-    from searchlight.matched_filtering import save_template_library
+    from searchlight.matched_filtering import _save_template_library_file as save_template_library
     bank = demo_templates()
     path = tmp_path / 'templates.npz'
     save_template_library(path, flux=np.array([t.flux for t in bank]), time=bank[0].time)

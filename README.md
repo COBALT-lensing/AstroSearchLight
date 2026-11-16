@@ -32,11 +32,13 @@ peak prominences.
 Generate the default self-lensing template library with:
 
 ```shell
-uv run python bin/generate_matched_filter_template_library.py
+uv run python bin/generate_matched_filter_template_library.py --version 2.0
 ```
 
-The generator writes `~/.astrosearchlight/matched_filter_templates.npz` by
-default. Install its private self-lensing dependency with:
+The generator writes `~/.astrosearchlight/templates/matched_filter/<version>/templates.npz`.
+CNN datasets, models, and matched-filter banks use numeric artifact versions; see
+[artifact versions and defaults](docs/artifact-versions.md). Install the private
+self-lensing dependency with:
 
 ```shell
 uv sync --extra template-generation --all-groups
@@ -55,6 +57,7 @@ matched-filter thresholds against a held-out validation set:
 
 ```shell
 uv run python bin/generate_matched_filter_template_library.py \
+  --version 2.0 \
   --calibrate-completeness \
   --validation-size 1000 \
   --target-recall 0.9
@@ -120,6 +123,7 @@ CPU fallback evaluation:
 
 ```shell
 uv run python bin/generate_matched_filter_template_library.py \
+  --version 2.0 \
   --calibrate-completeness \
   --validation-backend jax \
   --cpu-workers 12
@@ -173,16 +177,17 @@ Trained on simulated TESS data:
 Generate new CNN data with the shared photometry simulator (TESSGP noise by default):
 
 ```sh
-uv run python bin/generate_training_data.py /path/to/new-dataset --count-per-class 10000
+uv run python bin/generate_training_data.py --version 2.0 --count-per-class 10000
 ```
 
 Use `--noiseless` for deterministic curves. The three existing classes are retained.
 See [generation settings](docs/generation.md) for physical ranges and sampling.
 
-To train on an updated FITS dataset, use an explicit run directory:
+Datasets are stored under `~/.astrosearchlight/datasets/simulens/<version>/`.
+To train on a dataset version, select it and a new model version:
 
 ```sh
-uv run python bin/train_cnn.py /path/to/dataset --output-dir /path/to/new-run
+uv run python bin/train_cnn.py --dataset-version 2.0 --version 2.0
 ```
 
 See [CNN training](docs/cnn-training.md) for validation, reproducibility,

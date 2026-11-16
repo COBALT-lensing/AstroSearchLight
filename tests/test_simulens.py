@@ -262,7 +262,6 @@ def test_simulens_initializes_cpu_loader_and_builds_path_dataset(monkeypatch, tm
         def forward(self, x, mask):
             return self.linear(torch.ones(x.shape[0], 1))
 
-    monkeypatch.setattr(v1.SimuLens, "MODEL_SAVE_PATH", tmp_path / "model.pth")
     monkeypatch.setattr(v1, "SegmentAwareResNet", FakeSegmentAwareResNet)
     monkeypatch.setattr(v1.torch.cuda, "is_available", lambda: False)
     monkeypatch.setattr(v1.torch.mps, "is_available", lambda: False)

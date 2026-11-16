@@ -18,12 +18,11 @@ import numpy as np
 from tqdm import tqdm
 
 from searchlight.matched_filtering import (
-    DEFAULT_TEMPLATE_LIBRARY_PATH,
     MatchedFilterTemplateLibrary,
     detect_matched_filter_peaks,
     save_template_library,
 )
-from searchlight import generation
+from searchlight import generation, config
 from searchlight.paths import CACHE_PATH
 from searchlight.evaluation.provenance import dependency_provenance
 
@@ -1002,13 +1001,9 @@ def parse_args():
     parser = argparse.ArgumentParser(
         description="Generate self-lensing matched-filter templates."
     )
-    parser.add_argument(
-        "-o",
-        "--output",
-        type=Path,
-        default=DEFAULT_TEMPLATE_LIBRARY_PATH,
-        help=f"Output .npz path. Defaults to {DEFAULT_TEMPLATE_LIBRARY_PATH}.",
-    )
+    parser.add_argument("--version", type=config.validate_version, required=True,
+                        help="Template version to write, e.g. 2.0")
+    parser.add_argument("--overwrite", action="store_true", help="Replace an existing template version")
     parser.add_argument(
         "--grid-preset",
         choices=("default",),
@@ -1177,6 +1172,8 @@ def parse_args():
 
 def main():
     args = parse_args()
+    if config.template_library_path(args.version).exists() and not args.overwrite:
+        raise FileExistsError(f"Template version {args.version} already exists; select a new version")
     cpu_workers = args.cpu_workers if args.cpu_workers is not None else args.workers
     if args.calibrate_completeness:
         flux, time, parameters, metadata = calibrate_template_library(
@@ -1229,7 +1226,8 @@ def main():
             ranges=json.loads(args.ranges_json.read_text()) if getattr(args, "ranges_json", None) else None,
         )
     output = save_template_library(
-        args.output,
+        args.version,
+        overwrite=args.overwrite,
         flux=flux,
         time=time,
         parameters=parameters,

@@ -266,7 +266,7 @@ class FullWorkflowTests(unittest.TestCase):
         from searchlight.evaluation.experiment import read_config, score
         from searchlight.evaluation.runner import template_fingerprint
         from searchlight.evaluation.simulations import demo_templates
-        from searchlight.matched_filtering import save_template_library
+        from searchlight.matched_filtering import _save_template_library_file as save_template_library
         with tempfile.TemporaryDirectory() as directory:
             directory = Path(directory)
             raw = curve()

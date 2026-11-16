@@ -10,6 +10,7 @@ from astropy.io import fits
 from astropy.timeseries import TimeSeries
 
 from searchlight import generation as g
+from searchlight import config
 
 
 def _fixed_ranges():
@@ -117,11 +118,12 @@ def test_real_tess_gp_is_seeded_and_changes_the_flux():
 
 @pytest.mark.parametrize("noisy", [False, True])
 def test_three_class_dataset_is_readable_and_records_each_subtype(tmp_path, noisy):
-    output = tmp_path / "data"
-    metadata = g.generate_cnn_dataset(output, counts={"lensing": 2, "flare": 2, "not-lensing": 4},
+    output = config.dataset_directory("2.0")
+    metadata = g.generate_cnn_dataset("2.0", counts={"lensing": 2, "flare": 2, "not-lensing": 4},
         ranges=_fixed_ranges(), noisy=noisy, detection_sigma=0, duration_days=.2,
         batch_size=2, inverted_fraction=.5, progress=False)
     assert metadata["status"] == "complete"
+    assert metadata["dataset_version"] == "2.0"
     assert metadata["written_counts"] == {"lensing": 2, "flare": 2, "not-lensing": 4}
     assert len(metadata["files"]) == 8
     assert metadata["sampling_distributions"]["Mcomp"] == "uniform"
@@ -141,7 +143,7 @@ def test_three_class_dataset_is_readable_and_records_each_subtype(tmp_path, nois
         assert header["GENVER"] == g.GENERATOR_VERSION
         assert np.all(curve["flux_err"] > 0) if noisy else np.all(curve["flux_err"] == 0)
     with pytest.raises(FileExistsError):
-        g.generate_cnn_dataset(output, count_per_class=2, progress=False)
+        g.generate_cnn_dataset("2.0", count_per_class=2, progress=False)
 
 
 def test_training_cli_generates_before_constructing_model(tmp_path, monkeypatch):
@@ -151,12 +153,38 @@ def test_training_cli_generates_before_constructing_model(tmp_path, monkeypatch)
         LOADER_WORKERS = 0
         def __init__(self, **kwargs):
             events.append("model")
-            self.MODEL_SAVE_PATH = kwargs["output_dir"] / "model_weights.pth"
+            self.MODEL_SAVE_PATH = config.simulens_directory(kwargs["version"]) / "model_weights.pth"
         def train(self, dataset, **kwargs):
             events.append("train")
             return {"best_epoch": 1}
     monkeypatch.setattr(simulens, "SimuLens", FakeTrainer)
-    monkeypatch.setattr(g, "generate_from_args", lambda output, args: events.append("generate"))
+    monkeypatch.setattr(g, "generate_from_args", lambda version, args: events.append(("generate", version)))
     main = runpy.run_path(str(Path(__file__).parents[1] / "bin/train_cnn.py"))["main"]
-    main([str(tmp_path / "data"), "--output-dir", str(tmp_path / "model"), "--generate-data"])
-    assert events == ["generate", "model", "train"]
+    main(["--dataset-version", "3.0", "--version", "2.0", "--generate-data"])
+    assert events == [("generate", "3.0"), "model", "train"]
+
+
+def test_dataset_generation_cli_selects_a_version(monkeypatch):
+    seen = {}
+    def generate(version, args):
+        seen.update(version=version, noiseless=args.noiseless)
+        return {"written_counts": {"lensing": 2, "flare": 2, "not-lensing": 2}}
+    monkeypatch.setattr(g, "generate_from_args", generate)
+    g.main(["--version", "4.0", "--noiseless"])
+    assert seen == {"version": "4.0", "noiseless": True}
+    with pytest.raises(SystemExit):
+        g.main(["--version", "/tmp/dataset"])
+
+
+def test_new_dataset_version_preserves_the_previous_dataset():
+    import hashlib
+    options = dict(count_per_class=2, ranges=_fixed_ranges(), noisy=False,
+                   duration_days=.2, batch_size=2, progress=False)
+    g.generate_cnn_dataset("1.0", **options)
+    before = {str(path.relative_to(config.dataset_directory("1.0"))): hashlib.sha256(path.read_bytes()).hexdigest()
+              for path in config.dataset_directory("1.0").rglob("*") if path.is_file()}
+    g.generate_cnn_dataset("2.0", **options)
+    after = {str(path.relative_to(config.dataset_directory("1.0"))): hashlib.sha256(path.read_bytes()).hexdigest()
+             for path in config.dataset_directory("1.0").rglob("*") if path.is_file()}
+    assert before == after
+    assert json.loads((config.dataset_directory("2.0") / "generation.json").read_text())["dataset_version"] == "2.0"

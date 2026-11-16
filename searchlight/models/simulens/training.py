@@ -15,6 +15,7 @@ import torch
 from tqdm.auto import tqdm
 
 from ...evaluation.provenance import dependency_provenance
+from ... import config
 
 
 def _seed(seed):
@@ -101,7 +102,7 @@ def _source_provenance():
             return None
     source_hashes = {}
     for relative in ("searchlight/models/simulens/v1.py", "searchlight/models/simulens/training.py",
-                     "searchlight/lightcurves.py", "searchlight/utils.py", "searchlight/generation.py", "bin/train_cnn.py", "uv.lock"):
+                     "searchlight/config.py", "searchlight/lightcurves.py", "searchlight/utils.py", "searchlight/generation.py", "bin/train_cnn.py", "uv.lock"):
         path = root / relative
         if path.is_file():
             with path.open("rb") as stream:
@@ -139,27 +140,31 @@ def _epoch(trainer, loader, *, training):
     return {"loss": loss_sum / total, "accuracy": correct / total}
 
 
-def train(trainer, path, *, seed, max_epochs, patience, min_delta, resume, overwrite,
-          provenance, init_checkpoint=None):
+def train(trainer, dataset_version, *, seed, max_epochs, patience, min_delta, resume, overwrite,
+          provenance, init_version=None):
     from .v1 import GroupedLightcurveFolderDataSet, _resolve_split_sizes
 
     if trainer.loader_batch_size < 1 or trainer.loader_workers < 0 or trainer.max_segments_per_item < 1:
         raise ValueError("batch size and segment cap must be positive; workers must be nonnegative")
     if max_epochs < 1 or patience < 1 or not math.isfinite(min_delta) or min_delta < 0:
         raise ValueError("max_epochs/patience must be positive and min_delta finite and nonnegative")
-    if resume and init_checkpoint:
-        raise ValueError("resume and init_checkpoint cannot be combined")
+    if resume and init_version:
+        raise ValueError("resume and init_version cannot be combined")
     if resume and overwrite:
         raise ValueError("resume and overwrite cannot be combined")
-    root = Path(path).expanduser().resolve()
+    dataset_version = config.resolve_version("dataset", dataset_version)
+    root = config.dataset_directory(dataset_version)
+    if not root.is_dir():
+        raise FileNotFoundError(f"Dataset version {dataset_version} not found at {root}; generate it first")
     output = trainer.MODEL_SAVE_PATH.parent
     checkpoint_path = output / "training_checkpoint.pth"
     metadata_path = output / "training_run.json"
-    artifacts = [trainer.MODEL_SAVE_PATH, trainer.CLASS_SAVE_PATH, checkpoint_path, metadata_path]
+    inference_path = output / "inference.json"
+    artifacts = [trainer.MODEL_SAVE_PATH, trainer.CLASS_SAVE_PATH, checkpoint_path, metadata_path, inference_path]
     if not resume and not overwrite and any(item.exists() for item in artifacts):
-        raise FileExistsError(f"Training artifacts already exist in {output}; choose a new output directory")
-    if resume and Path(resume).expanduser().resolve() != checkpoint_path.resolve():
-        raise ValueError("Resume checkpoint must belong to the selected output directory")
+        raise FileExistsError(f"Training artifacts already exist in {output}; select a new model version")
+    if not isinstance(resume, bool):
+        raise ValueError("resume must be a boolean; select the model with version")
 
     dataset = GroupedLightcurveFolderDataSet(root, transform=trainer.transform,
         split_sizes=trainer.split_sizes, max_segments_per_item=trainer.max_segments_per_item)
@@ -170,6 +175,8 @@ def train(trainer, path, *, seed, max_epochs, patience, min_delta, resume, overw
     generated_path = root / "generation.json"
     if generated_path.exists():
         generated = json.loads(generated_path.read_text())
+        if generated.get("dataset_version", dataset_version) != dataset_version:
+            raise ValueError("Generation manifest does not match the selected dataset version")
         if generated.get("status") != "complete":
             raise ValueError("Generated dataset is incomplete; finish generation before training")
         expected = {entry["path"]: entry["sha256"] for entry in generated["files"]}
@@ -179,6 +186,7 @@ def train(trainer, path, *, seed, max_epochs, patience, min_delta, resume, overw
         provenance = {"generation": generated, "user": provenance}
     settings = {
         "seed": seed, "patience": patience, "min_delta": min_delta,
+        "dataset_version": dataset_version,
         "split_sizes": [None if math.isinf(size) else size for size in _resolve_split_sizes(trainer.split_sizes)],
         "max_segments_per_item": trainer.max_segments_per_item,
         "batch_size": trainer.loader_batch_size, "loader_workers": trainer.loader_workers,
@@ -188,13 +196,13 @@ def train(trainer, path, *, seed, max_epochs, patience, min_delta, resume, overw
         "use_amp": trainer.use_amp, "pretrained": trainer.pretrained,
     }
     initialization = None
-    if init_checkpoint:
-        initial_path = Path(init_checkpoint).expanduser().resolve()
+    if init_version:
+        initial_path = config.simulens_directory(init_version) / "model_weights.pth"
         initial_classes = json.loads(initial_path.with_name("model_classes.json").read_text())
         if initial_classes != dataset.classes:
             raise ValueError("Initial checkpoint class mapping must match the dataset's ordered classes")
         with initial_path.open("rb") as stream:
-            initialization = {"checkpoint": str(initial_path),
+            initialization = {"version": init_version, "checkpoint": str(initial_path),
                               "sha256": hashlib.file_digest(stream, "sha256").hexdigest()}
     settings["init_checkpoint_sha256"] = initialization["sha256"] if initialization else None
     checkpoint = None
@@ -244,7 +252,7 @@ def train(trainer, path, *, seed, max_epochs, patience, min_delta, resume, overw
         for artifact in artifacts:
             artifact.unlink(missing_ok=True)
     run = {
-        "schema_version": 1, "dataset_root": str(root), "classes": trainer.classes,
+        "schema_version": 1, "model_version": trainer.version, "dataset_version": dataset_version, "dataset_root": str(root), "classes": trainer.classes,
         "class_counts": counts, "manifest": manifest, "split": split, "settings": settings,
         "source": _source_provenance(), "dataset_provenance": provenance,
         "initialization": initialization,
@@ -254,6 +262,8 @@ def train(trainer, path, *, seed, max_epochs, patience, min_delta, resume, overw
     }
     if checkpoint:
         run["original_run"] = copy.deepcopy(checkpoint["run"])
+    _atomic_save(inference_path, {"split_sizes": settings["split_sizes"],
+        "max_segments_per_item": settings["max_segments_per_item"]}, json_file=True)
     _atomic_save(trainer.CLASS_SAVE_PATH, trainer.classes, json_file=True)
     _atomic_save(metadata_path, run, json_file=True)
 

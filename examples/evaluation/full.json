@@ -1,7 +1,5 @@
 {
   "output": "../../evaluation_runs/full-evaluation",
-  "checkpoint": "~/.astrosearchlight/models/simulens/1.0/model_weights.pth",
-  "templates": "~/.astrosearchlight/matched_filter_templates.npz",
   "seed": 2401,
   "backgrounds": {
     "kind": "catalogue",
@@ -81,16 +79,12 @@
     "gap_factor": 1.5
   },
   "cnn": {
-    "device": "cpu",
-    "split_sizes": [
-      null,
-      7,
-      2
-    ],
-    "max_segments_per_item": 24
+    "device": "cpu"
   },
   "pipeline_order": "matched_filter_then_cnn",
   "workers": 8,
   "cnn_workers": 8,
-  "matched_filter_backend": "cuda_fft"
+  "matched_filter_backend": "cuda_fft",
+  "model_version": null,
+  "template_version": null
 }

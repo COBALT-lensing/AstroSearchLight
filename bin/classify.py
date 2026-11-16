@@ -5,8 +5,7 @@ import warnings
 from pathlib import Path
 
 from searchlight.models.simulens import SimuLens
-from searchlight.models.deprecated.tree import XGBFilter
-from searchlight.models.deprecated.upsilon import UpsilonFilter
+from searchlight.config import validate_version
 
 # Suppress scipy.stats.shapiro UserWarning
 warnings.filterwarnings("ignore", category=UserWarning, message=".*scipy.stats.shapiro")
@@ -30,6 +29,8 @@ parser.add_argument(
 )
 parser.add_argument("-o", "--output", type=Path, help="Output CSV file for results")
 
+parser.add_argument("--model-version", type=validate_version, help="CNN version (defaults to the configured version)")
+
 args = parser.parse_args()
 
 classifier = args.classifier.lower()
@@ -38,10 +39,12 @@ results_path = args.output
 
 if __name__ == "__main__":
     if classifier == "resnet":
-        classifier = SimuLens(loader_workers=32)
+        classifier = SimuLens(version=args.model_version, pretrained=False, loader_workers=32)
     elif classifier == "xgboost":
+        from searchlight.models.deprecated.tree import XGBFilter
         classifier = XGBFilter()
     elif classifier == "upsilon":
+        from searchlight.models.deprecated.upsilon import UpsilonFilter
         classifier = UpsilonFilter()
     else:
         print("Unknown classifier specified", file=sys.stdout)
