@@ -211,3 +211,5 @@ data.*/
 ._*
 .codex
 .DS_Store
+# Local evaluation datasets and generated reports
+evaluation_runs/

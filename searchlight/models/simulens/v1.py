@@ -271,9 +271,9 @@ def _init_loader_worker(_worker_id):
 
 
 class SegmentAwareResNet(nn.Module):
-    def __init__(self, num_classes=2):
+    def __init__(self, num_classes=2, weights="ResNet34_Weights.IMAGENET1K_V1"):
         super().__init__()
-        backbone = models.resnet34(weights="ResNet34_Weights.IMAGENET1K_V1")
+        backbone = models.resnet34(weights=weights)
         in_features = backbone.fc.in_features
         backbone.fc = nn.Identity()
 

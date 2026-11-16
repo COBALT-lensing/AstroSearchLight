@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "metadata": {
+    "description": "Illustrative schema only: replace source paths and audit provenance before use",
+    "positive_class": "lensing",
+    "evaluation_unit": "target_sector"
+  },
+  "samples": [
+    {
+      "sample_id": "sim-system-001",
+      "source": "simulations/system-001.fits.gz",
+      "suite": "simulated",
+      "split": "test",
+      "group_id": "simulator-v1:system-001",
+      "label": "lensing",
+      "label_provenance": "simulator truth; illustrative example",
+      "cadence_seconds": 120.0,
+      "parameters": {"seed": 42}
+    }
+  ]
+}

@@ -26,6 +26,7 @@ from searchlight.matched_filtering import (
     save_template_library,
 )
 from searchlight.paths import CACHE_PATH
+from searchlight.evaluation.provenance import dependency_provenance
 
 
 DEFAULT_VALIDATION_CACHE_DIR = CACHE_PATH / "matched_filter_validation_cache"
@@ -327,11 +328,11 @@ def _evaluate_filter_batch(params_array, *, allow_rlof):
     )
     from selflensing.orbits import (
         AU_M,
-        C,
-        DAY_S,
-        G,
         M_SUN_KG,
         R_SUN_M,
+        crossing_time_days,
+        einstein_radius_m,
+        impact_parameter_source_radii,
         orbital_period_days,
         orbital_separation_m,
     )
@@ -350,11 +351,10 @@ def _evaluate_filter_batch(params_array, *, allow_rlof):
         sin_i = jnp.sin(i)
         porb_days = orbital_period_days(a_m, total_mass_kg)
 
-        separation_at_peak = orbital_separation_m(0.0, a_m, e, periapsis_phase)
-        r_e_m = jnp.sqrt((4 * G * macc_kg * separation_at_peak * sin_i) / (C**2))
-        b = jnp.abs(a_m * jnp.cos(i) / r_e_m)
-        b_max = 1 + (rcomp_m / r_e_m)
-        sl_possible = b <= b_max
+        r_e_m = einstein_radius_m(a_m, sin_i, macc_kg, e, periapsis_phase)
+        projected = impact_parameter_source_radii(a_m, i, rcomp_m, e, periapsis_phase)*rcomp_m
+        b = projected/jnp.where(r_e_m > 0, r_e_m, 1.)
+        sl_possible = (r_e_m > 0) & (projected <= rcomp_m+r_e_m)
 
         q = mcomp / macc
         q23 = q ** (2.0 / 3.0)
@@ -369,10 +369,8 @@ def _evaluate_filter_batch(params_array, *, allow_rlof):
         )
         rlof = r_roche <= rcomp_m
 
-        tau_eff_days = (
-            ((porb_days * DAY_S * (r_e_m + rcomp_m)) / (jnp.pi * a_m * sin_i))
-            * jnp.sqrt(1 - (b / b_max) ** 2)
-        ) / DAY_S
+        tau_eff_days = crossing_time_days(a_m, i, macc_kg, total_mass_kg,
+                                          rcomp_m, e, periapsis_phase)
 
         finite = (
             jnp.isfinite(porb_days)
@@ -631,6 +629,7 @@ def build_template_library(
         "filter_batch_size": DEFAULT_FILTER_BATCH_SIZE,
         "generation_batch_size": generation_batch_size,
         "generation_interface": "selflensing.batch.make_batched_light_curve_generator",
+        "simulator_provenance": dependency_provenance("selflensing", "rustlens", "jaxoplanet"),
         "grid_preset": grid_preset,
         "parameter_values": {
             name: None if values is None else list(values)
@@ -830,6 +829,7 @@ def _build_validation_lightcurves_uncached(
         "skipped_invalid_flux": skipped_invalid_flux,
         "generation_batch_size": generation_batch_size,
         "generation_interface": "selflensing.batch.make_batched_light_curve_generator",
+        "simulator_provenance": dependency_provenance("selflensing", "rustlens", "jaxoplanet"),
     }
     return (
         np.vstack(flux_rows),
@@ -872,7 +872,9 @@ def build_validation_lightcurves(
         "max_eccentricity": max_eccentricity,
         "allow_rlof": allow_rlof,
         "min_flux": min_flux,
-        "cache_version": 3,
+        # Package versions alone do not distinguish the radius-conversion fix.
+        "simulator_provenance": dependency_provenance("selflensing", "rustlens", "jaxoplanet"),
+        "cache_version": 4,
     }
     cache_path = _validation_cache_path(cache_dir, cache_settings)
     if use_cache and cache_path.exists():
@@ -907,6 +909,7 @@ def build_validation_lightcurves(
     metadata = {
         **metadata,
         "cache_hit": False,
+        "simulator_provenance": cache_settings["simulator_provenance"],
         "cache_path": str(cache_path) if use_cache else None,
     }
     if use_cache:

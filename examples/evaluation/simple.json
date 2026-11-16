@@ -1,0 +1,36 @@
+{
+  "output": "../../evaluation_runs/simple-evaluation",
+  "manifest": "../../evaluation_runs/prepublication/spoc-cohort/prepared/manifest.json",
+  "checkpoint": "~/.astrosearchlight/models/simulens/1.0/model_weights.pth",
+  "seed": 1402,
+  "amplitudes_ppm": [
+    100,
+    300,
+    1000,
+    3000,
+    10000
+  ],
+  "shapes_per_target": 1,
+  "template_count": 8,
+  "max_fpr": 0.05,
+  "required_recall": 0.9,
+  "preprocessing": {
+    "flux_product": "PDCSAP_FLUX",
+    "quality_bitmask": -1,
+    "normalize": true,
+    "trim_start_hours": 0,
+    "gap_factor": 1.5
+  },
+  "cnn": {
+    "device": "cpu",
+    "split_sizes": [
+      null,
+      7,
+      2
+    ],
+    "max_segments_per_item": 24
+  },
+  "pipeline_order": "matched_filter_then_cnn",
+  "workers": "auto",
+  "cnn_workers": 8
+}

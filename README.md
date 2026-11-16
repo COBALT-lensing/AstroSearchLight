@@ -2,6 +2,27 @@
 
 Vision-based light curve classification.
 
+## Injection–recovery evaluation
+
+Run the small real-SPOC evaluation with the actual CNN and matched filter:
+
+```sh
+uv sync --locked --extra template-generation --extra evaluation
+python bin/evaluate_pipeline.py examples/evaluation/simple.json
+```
+
+For the larger manuscript-range experiment using the fixed production template
+bank, run `.venv/bin/python bin/evaluate_pipeline.py examples/evaluation/full.json`.
+See the evaluation guide for sample counts and scope.
+
+Open [notebooks/evaluation.ipynb](notebooks/evaluation.ipynb) for precision–recall,
+a confusion matrix, and sensitivity versus injected amplitude for the CNN,
+matched filter, and their sequential combination. See the
+[evaluation guide](searchlight/evaluation/README.md) for inputs, settings and
+interpretation, and [the reduced plan](EVALUATION_PLAN.md) for scope.
+The supplied configuration reuses cached raw backgrounds and generates fresh
+injections/templates with the corrected physics pinned in `uv.lock`.
+
 ## Matched-filter searches
 
 The `searchlight.matched_filtering` module searches light curves with a bank of

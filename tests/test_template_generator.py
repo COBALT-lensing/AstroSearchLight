@@ -779,6 +779,30 @@ def test_validation_cache_ignores_seed_in_cache_key(monkeypatch, tmp_path):
     assert np.array_equal(second[0], [[1.0, 1.1, 1.0]])
 
 
+def test_validation_cache_invalidates_when_simulator_commit_changes(monkeypatch, tmp_path):
+    module = _load_generator_module()
+    calls = []
+    identity = {"selflensing": {"version": "0.0.1", "commit_id": "before-fix"}}
+    monkeypatch.setattr(module, "dependency_provenance", lambda *names: identity.copy())
+
+    def generate(**kwargs):
+        calls.append(kwargs["seed"])
+        return (np.array([[float(kwargs["seed"])]]), np.array([0.]),
+                np.array([(1.,)], dtype=[("a", "f8")]), {"seed": kwargs["seed"]})
+
+    monkeypatch.setattr(module, "_build_validation_lightcurves_uncached", generate)
+    old = module.build_validation_lightcurves(sample_count=1, seed=111, cache_dir=tmp_path)
+    identity["selflensing"] = {"version": "0.0.1", "commit_id": "after-fix"}
+    fixed = module.build_validation_lightcurves(sample_count=1, seed=222, cache_dir=tmp_path)
+    reused = module.build_validation_lightcurves(sample_count=1, seed=333, cache_dir=tmp_path)
+    assert calls == [111, 222]
+    assert old[3]["cache_path"] != fixed[3]["cache_path"]
+    assert not fixed[3]["cache_hit"]
+    assert reused[3]["cache_hit"]
+    assert reused[3]["simulator_provenance"]["selflensing"]["commit_id"] == "after-fix"
+    assert reused[0][0, 0] == 222.
+
+
 def test_validation_cache_can_be_disabled(monkeypatch, tmp_path):
     module = _load_generator_module()
     calls = []

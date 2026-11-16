@@ -1,0 +1,96 @@
+{
+  "output": "../../evaluation_runs/full-evaluation",
+  "checkpoint": "~/.astrosearchlight/models/simulens/1.0/model_weights.pth",
+  "templates": "~/.astrosearchlight/matched_filter_templates.npz",
+  "seed": 2401,
+  "backgrounds": {
+    "kind": "catalogue",
+    "catalog": "../../evaluation_runs/catalogs/spoc-1-13-27-39-120.json",
+    "sectors": [
+      1,
+      13,
+      27,
+      39
+    ],
+    "cadences_seconds": [
+      120
+    ],
+    "targets_per_stratum": 25,
+    "seed": 2402,
+    "split_seed": 2403,
+    "tuning_fraction": 0.3,
+    "exclude_prior_runs": "../../evaluation_runs"
+  },
+  "shapes_per_target": 8,
+  "amplitudes_ppm": [
+    30,
+    100,
+    300,
+    1000,
+    3000,
+    10000,
+    30000,
+    100000
+  ],
+  "injection": {
+    "proposal": "rv_manuscript",
+    "ranges": {
+      "a": [
+        0.1,
+        200.0
+      ],
+      "Macc": [
+        0.5,
+        50.0
+      ],
+      "Mcomp": [
+        0.5,
+        50.0
+      ],
+      "i": [
+        1.5706217938696971,
+        1.5707963267948966
+      ],
+      "e": [
+        0.0,
+        0.999999
+      ],
+      "periapsis_phase": [
+        0.0,
+        6.283185307179586
+      ],
+      "d": [
+        0.1,
+        100.0
+      ]
+    },
+    "coverage_policy": "all_events",
+    "nodes": 63,
+    "profile_grid_points": 2049,
+    "max_attempts": 1000,
+    "tail_error_budget_ppm": 0.01
+  },
+  "max_fpr": 0.05,
+  "required_recall": 0.9,
+  "bootstrap_repeats": 1000,
+  "preprocessing": {
+    "flux_product": "PDCSAP_FLUX",
+    "quality_bitmask": -1,
+    "normalize": true,
+    "trim_start_hours": 0,
+    "gap_factor": 1.5
+  },
+  "cnn": {
+    "device": "cpu",
+    "split_sizes": [
+      null,
+      7,
+      2
+    ],
+    "max_segments_per_item": 24
+  },
+  "pipeline_order": "matched_filter_then_cnn",
+  "workers": 8,
+  "cnn_workers": 8,
+  "matched_filter_backend": "cuda_fft"
+}
