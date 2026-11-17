@@ -24,6 +24,11 @@ DEFAULT_MIN_SCORE_SIGMA = 4.0
 DEFAULT_MATCH_WINDOW_REL_HEIGHT = 0.5
 DEFAULT_MIN_CENTER_FLUX_SIGMA = 4.0
 DEFAULT_TEMPLATE_COUNT = 50_000
+# In library 2.0, 0.5 * quantile(parameters["tau_eff"], 0.10) * 1440
+# is about 144.113 minutes (tau_eff is in days). Rounding down to 144
+# leaves 45,007/50,000 templates (90.014%) with >=2 cadence intervals
+# per crossing. This empirical criterion does not guarantee pulse coverage.
+DEFAULT_TEMPLATE_CADENCE_MINUTES = 144.0
 DEFAULT_TEMPLATE_BATCH_SIZE = 512
 _UNSET = object()
 _CORRELATION_BACKENDS = {"auto", "cpu", "jax"}

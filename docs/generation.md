@@ -131,7 +131,18 @@ The `default` preset draws 50,000 viable systems using the same shared proposal.
 Change `--template-count` for an individual run; the shared default is
 `DEFAULT_TEMPLATE_COUNT` in `searchlight/matched_filtering.py`.
 Templates are **noiseless**, with all three physical components enabled, events
-centred at zero, and 10-minute cadence. The common time grid always includes zero;
+centred at zero, and 144-minute cadence. The cadence default is
+`DEFAULT_TEMPLATE_CADENCE_MINUTES` in `searchlight/matched_filtering.py`.
+It was calculated from library 2.0 as half the 10th-percentile effective crossing
+time (about 144.113 minutes), rounded down to 144 minutes. At that cadence,
+90.014% of that bank spans at least two cadence intervals per crossing; sampling
+phase and pulse shape still affect the useful measurements. Override it with
+`--cadence-minutes`. Template generation excludes systems whose `tau_eff` is
+shorter than twice the selected cadence, drawing replacements to reach the
+requested system count. At the default cadence the minimum is 288 minutes
+(0.2 days). The cut is stored as `min_crossing_time_days` in the library metadata.
+CNN photometry retains its 600-second default cadence and its existing selection.
+The common time grid always includes zero;
 its half-width defaults to 1.2 times the largest crossing time. The CNN's
 noise/detectability selection is not applied to this shape bank. Use
 `--fixed-distance` to fix 1 kpc; otherwise distance is sampled over the default range.
@@ -143,7 +154,9 @@ only supported preset for template generation and calibration.
 
 Completeness calibration evaluates threshold settings against a single generated
 bank. Validation systems are independently sampled with the shared distributions
-and passed through the same noiseless model, with their own seed. Custom ranges propagate to both the
+and passed through the same noiseless model, with their own seed. The template
+crossing-time cut is not applied to validation systems, so calibration still
+measures recovery of short events. Custom ranges propagate to both the
 bank and validation set. Validation caches include the seed, effective proposal,
 generator source hash, and simulator provenance, so old distributions or changed
 seeds cannot silently reuse a prior validation set. This calibration measures

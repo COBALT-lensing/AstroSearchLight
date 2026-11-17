@@ -45,8 +45,9 @@ uv sync --extra template-generation --all-groups
 
 The `default` preset draws 50,000 viable systems with the shared photometry
 parameter ranges and distributions, then generates noiseless templates at
-10-minute cadence. Configure `--template-count`, `--template-seed`, or
-`--ranges-json`. Generation uses the shared batched JAX simulator.
+144-minute cadence. Configure `--cadence-minutes`, `--template-count`, `--template-seed`, or
+`--ranges-json`. Templates with crossing times shorter than twice the cadence
+are excluded and replaced. Generation uses the shared batched JAX simulator.
 See [shared generation](docs/generation.md) for ranges, noise, and CNN datasets.
 
 ### Completeness calibration

@@ -98,10 +98,13 @@ def evaluate_parameter_rows(rows, *, allow_rlof=False):
     return values[0].astype(bool), dict(zip(DERIVED_NAMES, values[1:]))
 
 
-def sample_systems(count, rng, *, ranges=None, allow_rlof=False, max_attempts=None, return_attempts=False):
+def sample_systems(count, rng, *, ranges=None, allow_rlof=False, max_attempts=None,
+                   return_attempts=False, min_crossing_time_days=0.0):
     """Draw exactly count viable systems with bounded, vectorised rejection."""
     if count < 1:
         raise ValueError("System count must be positive")
+    if not np.isfinite(min_crossing_time_days) or min_crossing_time_days < 0:
+        raise ValueError("min_crossing_time_days must be finite and nonnegative")
     bounds = resolve_ranges(ranges)
     max_attempts = max(100000, count * 10000) if max_attempts is None else max_attempts
     kept, attempts, chunks = 0, 0, []
@@ -109,12 +112,13 @@ def sample_systems(count, rng, *, ranges=None, allow_rlof=False, max_attempts=No
         size = min(max_attempts - attempts, 65536, max(1024, 4 * (count - kept)))
         candidates = sample_parameter_rows(rng, size, ranges=bounds)
         mask, derived = evaluate_parameter_rows(candidates, allow_rlof=allow_rlof)
+        mask &= derived["tau_eff"] >= min_crossing_time_days
         selected = select_rows({**candidates, **derived}, np.flatnonzero(mask)[:count - kept])
         kept += len(selected["a"])
         attempts += size
         chunks.append(selected)
     if kept < count:
-        raise RuntimeError(f"Only found {kept}/{count} viable systems after {attempts} draws; revise ranges or max_attempts")
+        raise RuntimeError(f"Only found {kept}/{count} viable systems after {attempts} draws; revise ranges, min_crossing_time_days or max_attempts")
     result = {name: np.concatenate([chunk[name] for chunk in chunks]) for name in chunks[0]}
     return (result, attempts) if return_attempts else result
 

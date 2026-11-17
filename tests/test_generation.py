@@ -188,3 +188,27 @@ def test_new_dataset_version_preserves_the_previous_dataset():
              for path in config.dataset_directory("1.0").rglob("*") if path.is_file()}
     assert before == after
     assert json.loads((config.dataset_directory("2.0") / "generation.json").read_text())["dataset_version"] == "2.0"
+
+
+def test_crossing_time_filter_rejects_short_events_before_counting(monkeypatch):
+    def candidates(rng, size, **kwargs):
+        rows = {name: np.ones(size) for name in g.PARAMETER_NAMES}
+        rows["a"] = np.arange(size, dtype=float)
+        return rows
+    def evaluate(rows, **kwargs):
+        tau = np.array([np.nextafter(.2, 0), .2, .3, .1])
+        derived = {name: np.ones(len(tau)) for name in g.DERIVED_NAMES}
+        derived["tau_eff"] = tau
+        return np.ones(len(tau), dtype=bool), derived
+    monkeypatch.setattr(g, "sample_parameter_rows", candidates)
+    monkeypatch.setattr(g, "evaluate_parameter_rows", evaluate)
+    selected, draws = g.sample_systems(2, np.random.default_rng(1), max_attempts=4,
+        min_crossing_time_days=.2, return_attempts=True)
+    assert draws == 4
+    assert selected["a"].tolist() == [1., 2.]
+    assert selected["tau_eff"].tolist() == [.2, .3]
+    # The ordinary photometry proposal remains unfiltered unless requested.
+    original = g.sample_systems(2, np.random.default_rng(1), max_attempts=4)
+    assert original["a"].tolist() == [0., 1.]
+    with pytest.raises(RuntimeError, match="min_crossing_time_days"):
+        g.sample_systems(2, np.random.default_rng(1), max_attempts=4, min_crossing_time_days=1.)

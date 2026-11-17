@@ -593,11 +593,11 @@ def test_default_templates_use_shared_proposal_and_zero_center(monkeypatch):
     module = _load_generator_module()
     observed = {}
     def sample(count, rng, **kwargs):
-        observed.update(count=count, ranges=kwargs["ranges"])
+        observed.update(count=count, ranges=kwargs["ranges"], min_crossing_time_days=kwargs["min_crossing_time_days"])
         rows = {name: np.full(count, value) for name, value in {
             "a": 10., "i": np.pi/2, "Macc": 5., "Mcomp": 1., "e": 0.,
             "periapsis_phase": 0., "d": 3., "Porb": 100., "b": 0.,
-            "tau_eff": .1, "Rcomp": 1., "Teff": 5800.}.items()}
+            "tau_eff": .5, "Rcomp": 1., "Teff": 5800.}.items()}
         return (rows, 1024) if kwargs.get("return_attempts") else rows
     monkeypatch.setattr(module.generation, "sample_systems", sample)
     # Exercise the real shared deterministic forward model.
@@ -605,13 +605,15 @@ def test_default_templates_use_shared_proposal_and_zero_center(monkeypatch):
     assert observed["count"] == 2
     assert observed["ranges"] == module.generation.DEFAULT_RANGES
     assert metadata["grid_preset"] == "default"
-    assert metadata["cadence_minutes"] == 10.
+    assert metadata["cadence_minutes"] == 144.
+    assert metadata["min_crossing_time_days"] == .2
+    assert observed["min_crossing_time_days"] == .2
     assert metadata["noisy"] is False
     assert metadata["shared_generator"]["sampling_distributions"]["Mcomp"] == "uniform"
     assert 0. in time
     assert np.all(parameters["d"] == 3.)
     assert flux.shape == (2, len(time))
-    np.testing.assert_allclose(np.diff(time), 600 / 86400)
+    np.testing.assert_allclose(np.diff(time), 144 / 1440)
 
 
 def test_validation_uses_same_shared_proposal_and_custom_ranges(monkeypatch):
@@ -619,14 +621,15 @@ def test_validation_uses_same_shared_proposal_and_custom_ranges(monkeypatch):
     calls = []
     original = module.generation.sample_systems
     def sample(*args, **kwargs):
-        calls.append(kwargs["ranges"])
+        calls.append(kwargs)
         return original(*args, **kwargs)
     monkeypatch.setattr(module.generation, "sample_systems", sample)
     ranges = {"i": [np.pi/2, np.pi/2], "a": [10,10], "Macc": [5,5],
               "Mcomp": [1,1], "d": [.1,.1], "e": [0,0]}
     flux, time, params, metadata = module.build_validation_lightcurves(sample_count=2, seed=17,
         ranges=ranges, half_window_days=.1, use_cache=False)
-    assert calls[0]["Mcomp"] == (1.,1.)
+    assert calls[0]["ranges"]["Mcomp"] == (1.,1.)
+    assert calls[0]["min_crossing_time_days"] == 0.
     assert np.all(params["d"] == .1)
     assert metadata["shared_generator"]["ranges"]["d"] == (.1,.1)
     assert 0 in time
@@ -635,9 +638,9 @@ def test_validation_uses_same_shared_proposal_and_custom_ranges(monkeypatch):
 
 def test_build_template_library_skips_invalid_flux(monkeypatch):
     module = _load_generator_module()
-    systems = [(1., {"a": float(index + 1), "i": np.pi/2, "Macc": 5., "Mcomp": 1.,
+    systems = [(3., {"a": float(index + 1), "i": np.pi/2, "Macc": 5., "Mcomp": 1.,
                       "e": 0., "periapsis_phase": 0., "d": 1.},
-                {"Porb": 100., "b": 0., "tau_eff": 1., "Rcomp": 1., "Teff": 5800.})
+                {"Porb": 100., "b": 0., "tau_eff": 3., "Rcomp": 1., "Teff": 5800.})
                for index in range(3)]
     monkeypatch.setattr(module, "_sample_template_systems", lambda *args, **kwargs: (systems, 1024))
     def factory(times, **kwargs):
@@ -692,3 +695,17 @@ def test_calibration_builds_one_bank_and_selects_best_below_target(monkeypatch):
     assert len(metadata["calibration"]["evaluations"]) == 3
     assert metadata["calibration"]["selected"]["recall"] == .5
     assert metadata["calibration"]["selected"]["prominence_sigma"] == 2
+
+
+def test_saved_templates_all_have_two_cadence_intervals_per_crossing():
+    from searchlight.matched_filtering import save_template_library
+    module = _load_generator_module()
+    flux, times, params, metadata = module.build_template_library(template_count=4, seed=17,
+        generation_batch_size=2, ranges={"i": [np.pi/2, np.pi/2], "a": [.1, 100.],
+            "Macc": [5.,5.], "Mcomp": [1.,1.], "e": [0.,0.], "d": [1.,1.]})
+    save_template_library("3.0", flux=flux, time=times, parameters=params, metadata=metadata)
+    bank = load_template_library("3.0")
+    minimum = 2 * bank.metadata["cadence_minutes"] / 1440
+    assert len(bank) == 4
+    assert np.all(bank.parameters["tau_eff"] >= minimum)
+    assert bank.metadata["min_crossing_time_days"] == minimum

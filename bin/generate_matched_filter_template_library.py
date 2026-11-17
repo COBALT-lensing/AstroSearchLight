@@ -19,6 +19,7 @@ from tqdm import tqdm
 
 from searchlight.matched_filtering import (
     DEFAULT_TEMPLATE_COUNT,
+    DEFAULT_TEMPLATE_CADENCE_MINUTES,
     MatchedFilterTemplateLibrary,
     detect_matched_filter_peaks,
     save_template_library,
@@ -152,10 +153,12 @@ def _default_ranges(ranges, *, include_distance, max_eccentricity):
 
 def _sample_template_systems(count, seed, *, include_distance=True,
                              max_eccentricity=DEFAULT_MAX_ECCENTRICITY,
-                             allow_rlof=False, ranges=None, max_attempts=None, return_attempts=False):
+                             allow_rlof=False, ranges=None, max_attempts=None, return_attempts=False,
+                             min_crossing_time_days=0.0):
     bounds = _default_ranges(ranges, include_distance=include_distance, max_eccentricity=max_eccentricity)
     sampled = generation.sample_systems(count, np.random.default_rng(seed), ranges=bounds,
-        allow_rlof=allow_rlof, max_attempts=max_attempts, return_attempts=return_attempts)
+        allow_rlof=allow_rlof, max_attempts=max_attempts, return_attempts=return_attempts,
+        min_crossing_time_days=min_crossing_time_days)
     rows, attempts = sampled if return_attempts else (sampled, None)
     systems = [(float(rows["tau_eff"][index]),
              {name: float(rows[name][index]) for name in generation.PARAMETER_NAMES},
@@ -166,7 +169,7 @@ def _sample_template_systems(count, seed, *, include_distance=True,
 
 def build_template_library(
     *,
-    cadence_minutes=generation.DEFAULT_CADENCE_SECONDS / 60,
+    cadence_minutes=DEFAULT_TEMPLATE_CADENCE_MINUTES,
     half_window_days=None,
     window_scale=1.2,
     include_distance=True,
@@ -190,9 +193,16 @@ def build_template_library(
     )
     if grid_preset != "default":
         raise ValueError("Only the default preset is supported")
+    cadence_days = cadence_minutes / (24 * 60)
+    if not np.isfinite(cadence_days) or cadence_days <= 0:
+        raise ValueError("Cadence must be positive and finite")
+    # Reject unresolved events before generating their flux, and keep drawing
+    # replacements until the requested number of eligible systems is reached.
+    min_crossing_time_days = 2 * cadence_days
     count = min(template_count, max_templates) if max_templates is not None else template_count
     systems, proposal_draws = _sample_template_systems(count, seed, include_distance=include_distance,
-        max_eccentricity=max_eccentricity, allow_rlof=allow_rlof, ranges=ranges, return_attempts=True)
+        max_eccentricity=max_eccentricity, allow_rlof=allow_rlof, ranges=ranges, return_attempts=True,
+        min_crossing_time_days=min_crossing_time_days)
 
     if not systems:
         raise RuntimeError("No self-lensing-capable systems were generated")
@@ -209,7 +219,6 @@ def build_template_library(
         max_tau_eff = max(tau_eff_days for tau_eff_days, _, _ in systems)
         half_window_days = max_tau_eff * window_scale
 
-    cadence_days = cadence_minutes / (24 * 60)
     if not np.isfinite([cadence_days, half_window_days]).all() or min(cadence_days, half_window_days) <= 0:
         raise ValueError("Cadence and template half-window must be positive and finite")
     half_samples = int(np.ceil(half_window_days / cadence_days))
@@ -245,6 +254,7 @@ def build_template_library(
 
     metadata = {
         "cadence_minutes": cadence_minutes,
+        "min_crossing_time_days": min_crossing_time_days,
         "half_window_days": half_window_days,
         "window_scale": window_scale,
         "include_distance": include_distance,
@@ -324,7 +334,7 @@ def _build_validation_lightcurves_uncached(
     *,
     sample_count=1000,
     seed,
-    cadence_minutes=generation.DEFAULT_CADENCE_SECONDS / 60,
+    cadence_minutes=DEFAULT_TEMPLATE_CADENCE_MINUTES,
     half_window_days=None,
     window_scale=1.2,
     include_distance=True,
@@ -416,7 +426,7 @@ def build_validation_lightcurves(
     *,
     sample_count=1000,
     seed=None,
-    cadence_minutes=generation.DEFAULT_CADENCE_SECONDS / 60,
+    cadence_minutes=DEFAULT_TEMPLATE_CADENCE_MINUTES,
     half_window_days=None,
     window_scale=1.2,
     include_distance=True,
@@ -865,7 +875,7 @@ def calibrate_template_library(
     validation_size=1000,
     validation_seed=None,
     threshold_grid=None,
-    cadence_minutes=generation.DEFAULT_CADENCE_SECONDS / 60,
+    cadence_minutes=DEFAULT_TEMPLATE_CADENCE_MINUTES,
     half_window_days=None,
     window_scale=1.2,
     include_distance=True,
@@ -1089,8 +1099,8 @@ def parse_args():
     parser.add_argument(
         "--cadence-minutes",
         type=float,
-        default=generation.DEFAULT_CADENCE_SECONDS / 60,
-        help="Shared template cadence in minutes.",
+        default=DEFAULT_TEMPLATE_CADENCE_MINUTES,
+        help=f"Shared template cadence in minutes (default: {DEFAULT_TEMPLATE_CADENCE_MINUTES:g}).",
     )
     parser.add_argument(
         "--half-window-days",
