@@ -1,10 +1,17 @@
 """Cache exact SPOC files and prepare manifests without inventing labels."""
 
 from dataclasses import replace
+import errno
 import hashlib
+import http.client
 import json
+import logging
+import math
 from pathlib import Path
 import shutil
+import socket
+import time
+import urllib.error
 import urllib.parse
 import urllib.request
 
@@ -12,6 +19,44 @@ import numpy as np
 
 from .datasets import EvaluationManifest, EvaluationSample
 from .preprocessing import PreprocessingConfig, read_lightcurve
+
+
+logger = logging.getLogger(__name__)
+DEFAULT_DOWNLOAD_ATTEMPTS = 5
+DEFAULT_DOWNLOAD_RETRY_DELAY_SECONDS = 1.0
+_RETRYABLE_HTTP_STATUS = {408, 429, 500, 502, 503, 504}
+_RETRYABLE_NETWORK_ERRNOS = {errno.EAGAIN, errno.ETIMEDOUT, errno.ECONNRESET,
+    errno.ECONNABORTED, errno.ECONNREFUSED, errno.ENETUNREACH, errno.EHOSTUNREACH,
+    errno.ENETDOWN, errno.EPIPE}
+
+
+def _retryable_download_error(error):
+    if isinstance(error, urllib.error.HTTPError):
+        return error.code in _RETRYABLE_HTTP_STATUS
+    if isinstance(error, urllib.error.URLError):
+        return _retryable_download_error(error.reason)
+    if isinstance(error, socket.gaierror):
+        return error.errno == socket.EAI_AGAIN  # Temporary DNS failure; not an unknown hostname.
+    return (isinstance(error, (TimeoutError, ConnectionError, http.client.IncompleteRead))
+            or isinstance(error, OSError) and error.errno in _RETRYABLE_NETWORK_ERRNOS)
+
+
+def _download_product(url, temporary, *, max_attempts, retry_delay_seconds):
+    for attempt in range(max_attempts):
+        try:
+            with urllib.request.urlopen(url, timeout=120) as response, temporary.open("wb") as stream:
+                shutil.copyfileobj(response, stream)
+            return
+        except (urllib.error.URLError, OSError, http.client.HTTPException) as error:
+            temporary.unlink(missing_ok=True)
+            if isinstance(error, urllib.error.HTTPError):
+                error.close()
+            if attempt + 1 == max_attempts or not _retryable_download_error(error):
+                raise
+            delay = min(30., retry_delay_seconds * 2 ** attempt)
+            logger.warning("Product download failed (%d/%d): %s; retrying in %gs",
+                           attempt + 1, max_attempts, error, delay)
+            time.sleep(delay)
 
 
 def sha256(path):
@@ -22,8 +67,18 @@ def sha256(path):
     return digest.hexdigest()
 
 
-def cache_product(source, directory):
-    """Identity is the full product URI; verify bytes before reusing a cache hit."""
+def cache_product(source, directory, *, max_attempts=DEFAULT_DOWNLOAD_ATTEMPTS,
+                  retry_delay_seconds=DEFAULT_DOWNLOAD_RETRY_DELAY_SECONDS):
+    """Verify cached product bytes; retry transient MAST transfer failures.
+
+    Downloads get five attempts by default, with 1/2/4/8-second backoff. A failed
+    transfer is discarded before retrying; local copies and corrupt cache hits
+    are never retried. The final failure retains its original exception.
+    """
+    if not isinstance(max_attempts, int) or max_attempts < 1:
+        raise ValueError("max_attempts must be a positive integer")
+    if not math.isfinite(retry_delay_seconds) or retry_delay_seconds < 0:
+        raise ValueError("retry_delay_seconds must be finite and nonnegative")
     directory = Path(directory)
     directory.mkdir(parents=True, exist_ok=True)
     key = hashlib.sha256(str(source).encode()).hexdigest()
@@ -37,8 +92,8 @@ def cache_product(source, directory):
     try:
         if str(source).startswith("mast:"):
             url = "https://mast.stsci.edu/api/v0.1/Download/file?uri=" + urllib.parse.quote(str(source), safe="")
-            with urllib.request.urlopen(url, timeout=120) as response, temporary.open("wb") as stream:
-                shutil.copyfileobj(response, stream)
+            _download_product(url, temporary, max_attempts=max_attempts,
+                              retry_delay_seconds=retry_delay_seconds)
         else:
             shutil.copyfile(source, temporary)
         checksum = sha256(temporary)
